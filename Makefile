@@ -2,7 +2,7 @@ run:
 	go run ./cmd/api
 
 dev:
-	go run ./cmd/api
+	air
 
 test:
 	go test ./...

@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8" />
+    <title>Verify your email</title>
+</head>
+
+<body style="margin:0; padding:0; font-family:Arial, sans-serif; background:#f6f6f6;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="padding:30px 0;">
+        <tr>
+            <td align="center">
+                <table width="600" cellpadding="0" cellspacing="0"
+                    style="background:#ffffff; border-radius:12px; padding:30px;">
+                    <tr>
+                        <td>
+                            <h2 style="color:#111111;">Verify your email address</h2>
+
+                            <p style="font-size:16px; color:#333333;">
+                                Hi {{.Name}},
+                            </p>
+
+                            <p style="font-size:16px; color:#333333;">
+                                Thanks for creating an account on {{.AppName}}. Please verify your email address to
+                                continue.
+                            </p>
+
+                            <p style="margin:30px 0;">
+                                <a href="{{.VerifyURL}}"
+                                    style="background:#0b5f3a; color:#ffffff; padding:14px 24px; text-decoration:none; border-radius:8px; display:inline-block;">
+                                    Verify Email
+                                </a>
+                            </p>
+
+                            <p style="font-size:14px; color:#666666;">
+                                This link will expire in {{.ExpiryMinutes}} minutes.
+                            </p>
+
+                            <p style="font-size:14px; color:#666666;">
+                                If you did not create this account, you can ignore this email.
+                            </p>
+
+                            <hr style="border:none; border-top:1px solid #eeeeee; margin:30px 0;" />
+
+                            <p style="font-size:12px; color:#999999;">
+                                {{.AppName}}
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+
+</html>
