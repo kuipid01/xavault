@@ -28,3 +28,7 @@ type ResetPasswordRequest struct {
 type RefreshTokenRequest struct {
 	RefreshToken string `json:"refresh_token" validate:"required"`
 }
+
+type MeRequest struct {
+	UserID string `json:"user_id" validate:"required"`
+}

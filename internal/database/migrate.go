@@ -4,6 +4,7 @@ import (
 	"log"
 
 	"github.com/kuipid01/salary-vault/internal/users"
+	"github.com/kuipid01/salary-vault/internal/wallets"
 	"gorm.io/gorm"
 )
 
@@ -11,6 +12,7 @@ func RunMigrations(db *gorm.DB) {
 	// ClearDatabase(db)
 	err := db.AutoMigrate(
 		&users.User{},
+		&wallets.Wallet{},
 	)
 
 	if err != nil {

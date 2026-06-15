@@ -1,7 +1,10 @@
 package auth
 
 import (
+	"os"
+
 	"github.com/gofiber/fiber/v2"
+	"github.com/kuipid01/salary-vault/internal/shared/middleware"
 )
 
 func RegisterAuthRoutes(v1 fiber.Router, h *AuthHandler) {
@@ -15,8 +18,12 @@ func RegisterAuthRoutes(v1 fiber.Router, h *AuthHandler) {
 
 	auth.Post("/forget-password", h.ForgetPassword)
 	auth.Post("/reset-password", h.ResetPassword)
-	auth.Get("/me", h.Me)
 	auth.Post("/refresh-token", h.RefreshToken)
+
+	auth.Use(middleware.Protected(os.Getenv("JWT_ACCESS_SECRET")))
+
+	auth.Get("/me", h.Me)
+
 	auth.Post("/resend-verification-mail", h.ResendVerificationMail)
 	auth.Post("/change-password", h.ChangePassword)
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	"github.com/gofiber/swagger"
 	"github.com/kuipid01/salary-vault/internal/app"
 	"github.com/kuipid01/salary-vault/internal/config"
 	"github.com/kuipid01/salary-vault/internal/database"
@@ -31,6 +32,8 @@ func main() {
 	fiberApp := app.New(cfg, newContainer)
 
 	fmt.Println("Server is running on", addr)
+	fiberApp.Get("/swagger/*", swagger.HandlerDefault)
+
 	if err := fiberApp.Listen(addr); err != nil {
 		fmt.Println(err)
 	}

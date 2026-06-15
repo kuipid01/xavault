@@ -118,13 +118,12 @@ func (h *AuthHandler) Logout(c *fiber.Ctx) error {
 }
 
 func (h *AuthHandler) Me(c *fiber.Ctx) error {
-	var req ResetPasswordRequest
 
-	if err := c.BodyParser(&req); err != nil {
-		return response.Error(c, fiber.StatusBadRequest, "Invalid request", err)
-	}
+	userID := c.Locals("user_id").(string)
 
-	result := h.authService.Me(req)
+	result := h.authService.Me(MeRequest{
+		UserID: userID,
+	})
 
 	if result.Error != nil {
 		return response.Error(c, fiber.StatusBadRequest, result.Message, result.Error)

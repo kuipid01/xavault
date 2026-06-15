@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"github.com/kuipid01/salary-vault/internal/platform/mail"
 	"github.com/kuipid01/salary-vault/internal/shared/response"
 	"github.com/kuipid01/salary-vault/internal/users"
@@ -60,6 +61,7 @@ func (s *AuthService) Register(req RegisterRequest) *response.APIResponse {
 	}
 	now := time.Now()
 	finalUser = users.User{
+		ID:              uuid.Must(uuid.NewV7()).String(),
 		Email:           validData.Email,
 		Password:        hashedPassword,
 		EmailVerifiedAt: &now,
@@ -126,7 +128,7 @@ func (s *AuthService) Login(req LoginRequest) *response.APIResponse {
 			Error:   "invalid_credentials",
 		}
 	}
-
+	fmt.Println("USER FROM SERVICE", user)
 	accessToken, refreshToken, err := GenerateAllToken(user.ID, user.Email, s.tokenService)
 	if err != nil {
 		return &response.APIResponse{
@@ -296,8 +298,28 @@ func (s *AuthService) ResendVerificationMail(req ResetPasswordRequest) *response
 	return nil
 }
 
-func (s *AuthService) Me(req ResetPasswordRequest) *response.APIResponse {
-	return nil
+func (s *AuthService) Me(req MeRequest) *response.APIResponse {
+
+	user, err := s.repository.FindById(req.UserID)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not find user",
+			Error:   err.Error(),
+		}
+	}
+	if user == nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "User not found",
+			Error:   "user_not_found",
+		}
+	}
+	return &response.APIResponse{
+		Success: true,
+		Message: "User found",
+		Data:    user,
+	}
 }
 
 func (s *AuthService) RefreshToken(req RefreshTokenRequest) *response.APIResponse {

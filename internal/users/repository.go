@@ -104,3 +104,18 @@ func (r *UserRepository) GetUserWithToken(token string) (*User, error) {
 func (r *UserRepository) UpdateRefreshToken(userID string, refreshToken string) error {
 	return r.db.Model(&User{}).Where("id = ?", userID).Update("refresh_token", refreshToken).Error
 }
+
+func (r *UserRepository) FindById(id string) (*User, error) {
+	var user User
+
+	err := r.db.Where("id = ?", id).First(&user).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return &user, nil
+}
