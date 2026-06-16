@@ -12,4 +12,5 @@ func RegisterWalletRoutes(v1 fiber.Router, h *WalletHandler) {
 
 	wallet.Get("/", h.GetMyWallet)
 	wallet.Post("/deposit/initiate", h.InitiateDeposit)
+	wallet.Get("/deposits", h.GetAllDeposits)
 }

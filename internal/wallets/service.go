@@ -3,6 +3,7 @@ package wallets
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"time"
@@ -37,9 +38,9 @@ func (svc *WalletService) GetMyWallet(userId string) *response.APIResponse {
 	}
 
 	return &response.APIResponse{
-		Success: false,
-		Message: "Invalid data",
-		Error:   wallet,
+		Success: true,
+		Message: "Wallet fetched successfully",
+		Data:    wallet,
 	}
 }
 
@@ -83,7 +84,6 @@ func (s *WalletService) CreateWallet(userId string) *response.APIResponse {
 	}
 
 }
-
 func (s *WalletService) InitiateDeposit(
 	ctx context.Context,
 	idempotencyKey string,
@@ -91,11 +91,10 @@ func (s *WalletService) InitiateDeposit(
 	email string,
 	req InitiateDepositRequest,
 ) *response.APIResponse {
-	// The reference is tied safely to this specific idempotent execution run
-
 	now := time.Now()
 	id := security.GenateUniqueID()
 	reference := security.GenerateReference()
+
 	wallet, err := s.repo.GetWalletByOwnerID(userId)
 	if err != nil {
 		return &response.APIResponse{
@@ -104,7 +103,8 @@ func (s *WalletService) InitiateDeposit(
 			Error:   err,
 		}
 	}
-	// 2. Define the core business logic wrapper
+
+	// 1. Move ALL stateful execution inside this function block
 	executionLogic := func() (int, interface{}, error) {
 		APP_ENV := os.Getenv("APP_ENV")
 		callback_url := fmt.Sprintf("%s/dashboard/wallet/deposit/callback", os.Getenv("APP_LOCAL_URL"))
@@ -121,50 +121,155 @@ func (s *WalletService) InitiateDeposit(
 			CallbackURL: callback_url,
 		}
 
+		// Hit Paystack
 		paystackResponse, err := s.payment.InitiateDeposit(ctx, reqBody)
 		if err != nil {
-			// Return appropriate HTTP error status alongside the raw error object
 			return http.StatusBadRequest, nil, err
+		}
+
+		// Create the local deposit log record here
+		body := &WalletDeposit{
+			ID:        id,
+			Amount:    req.Amount,
+			Currency:  "NGN",
+			Reference: reference,
+			WalletID:  wallet.ID,
+			UserID:    userId,
+			Status:    "pending",
+			Provider:  "paystack",
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+
+		_, err = s.repo.CreateDeposit(body)
+		if err != nil {
+			// If DB logging fails, return an Internal Server Error status
+			return http.StatusInternalServerError, nil, fmt.Errorf("failed to create deposit log: %w", err)
 		}
 
 		// Return HTTP Status 200 along with Paystack's initialization payload data
 		return http.StatusOK, paystackResponse.Data, nil
 	}
 
-	// 3. Funnel execution through the idempotency machine
+	// 2. Funnel execution through the idempotency machine
 	_, payload, err := s.idempotencyManager.HandleIdempotentRequest(ctx, idempotencyKey, userId, executionLogic)
 	if err != nil {
-		// If there's an internal error or a conflicting duplicate key request
 		return &response.APIResponse{
 			Success: false,
 			Message: "Failed to process deposit request",
 			Error:   err.Error(),
 		}
 	}
-	body := &WalletDeposit{
-		ID:        id,
-		Amount:    req.Amount,
-		Currency:  "NGN",
-		Reference: reference,
-		WalletID:  wallet.ID,
-		UserID:    userId,
-		Status:    "pending",
-		Provider:  "paystack",
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	// create deposit log
-	_, err = s.repo.CreateDeposit(body)
-	if err != nil {
-		return &response.APIResponse{
-			Success: false,
-			Message: "Failed to create deposit log",
-			Error:   err,
-		}
-	}
+
+	// 3. Clean and clear return path for both new and cached runs
 	return &response.APIResponse{
 		Success: true,
 		Message: "Deposit initiated successfully",
 		Data:    payload,
+	}
+}
+
+func (s *WalletService) CreditWallet(reference string, webhookAmount int64) *response.APIResponse {
+	// 1. Validate incoming amount payload baseline
+	if webhookAmount <= 0 {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Invalid amount passed",
+			Error:   "amount_must_be_greater_than_zero",
+		}
+	}
+
+	// 2. Fetch the existing deposit reference audit record
+	walletdeposit, err := s.repo.GetDepositByReference(reference)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Deposit reference records not found",
+			Error:   err.Error(),
+		}
+	}
+
+	// 3. Prevent Double Crediting (Idempotency Check)
+	if walletdeposit.Status == "success" {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Deposit has already been completed processed",
+			Error:   "deposit_already_processed",
+		}
+	}
+
+	// 4. CRITICAL FINANCIAL CHECK: Compare webhook amount against original intent
+	// Paystack/Flutterwave report in minor units (e.g., Kobo), verify they align perfectly
+	if walletdeposit.Amount != webhookAmount {
+		// Log this to your DB or log manager immediately for security audits
+		log.Printf("⚠️ SECURITY ALERT: Mismatched deposit amount detected for Ref %s. Expected: %d, Got: %d",
+			reference, walletdeposit.Amount, webhookAmount)
+
+		// Update status to flag an investigation rather than failing silently
+		_, _ = s.repo.UpdateDepositStatus(reference, "amount_mismatch_flagged")
+
+		return &response.APIResponse{
+			Success: false,
+			Message: "Transaction amount mismatch detected. Processing rejected.",
+			Error:   "amount_mismatch_error",
+		}
+	}
+
+	// 5. ATOMIC EXECUTION BLOCK: Execute status switch and wallet credit together
+	// Wrap these steps in a database transaction block inside your repository layer
+	err = s.repo.ExecuteInTransaction(func(txRepo *WalletRepository) error {
+
+		// A. Update the deposit status inside the transaction scope
+		if _, err := txRepo.UpdateDepositStatus(reference, "success"); err != nil {
+			return err
+		}
+
+		// B. Fetch the wallet record with an exclusive lock
+		wallet, err := txRepo.GetWalletByOwnerID(walletdeposit.UserID)
+		if err != nil {
+			return err
+		}
+
+		// C. Credit the mathematical balances safely
+		wallet.AvailableBalance += webhookAmount
+		wallet.LedgerBalance += webhookAmount
+
+		// D. Commit changes down to persistent storage
+		if _, err := txRepo.Update(wallet); err != nil {
+			return err
+		}
+
+		return nil
+	})
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Failed to securely execute wallet ledger update",
+			Error:   err.Error(),
+		}
+	}
+
+	// 6. COMPILER FIX: Added final explicit successful return statement
+	return &response.APIResponse{
+		Success: true,
+		Message: "Wallet credited successfully",
+		Data:    walletdeposit,
+	}
+}
+
+func (s *WalletService) GetAllDeposits(userId string) *response.APIResponse {
+	walletdeposit, err := s.repo.GetWalletDepositsByUserID(userId)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Failed to securely execute wallet ledger update",
+			Error:   err.Error(),
+		}
+	}
+
+	return &response.APIResponse{
+		Success: true,
+		Message: "Wallet credited successfully",
+		Data:    walletdeposit,
 	}
 }

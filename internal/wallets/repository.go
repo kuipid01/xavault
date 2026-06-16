@@ -91,3 +91,42 @@ func (repo *WalletRepository) UpdateDepositStatus(reference string, status strin
 
 	return &deposit, nil
 }
+
+func (rep *WalletRepository) ExecuteInTransaction(fn func(txRepo *WalletRepository) error) error {
+	// 1. Begin the GORM database transaction
+	tx := rep.db.Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+
+	// 2. Setup defer block to catch panics and force a safety rollback
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// 3. Clone the wallet repository, injecting the *transactional* DB instance
+	txRepository := &WalletRepository{db: tx}
+
+	// 4. Pass the cloned repository into your business logic function closure
+	if err := fn(txRepository); err != nil {
+		tx.Rollback() // Rollback if the business logic returns an error
+		return err
+	}
+
+	// 5. Commit if everything completes cleanly without errors
+	return tx.Commit().Error
+}
+
+func (repo *WalletRepository) GetWalletDepositsByUserID(userID string) ([]WalletDeposit, error) {
+	var deposits []WalletDeposit
+
+	if err := repo.db.Where("user_id = ?", userID).
+		Order("created_at DESC").
+		Find(&deposits).Error; err != nil {
+		return nil, err
+	}
+
+	return deposits, nil
+}

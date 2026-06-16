@@ -14,10 +14,13 @@ type Wallet struct {
 }
 
 type WalletDeposit struct {
-	ID        string    `gorm:"type:uuid;primaryKey" json:"id"`
-	UserID    string    `gorm:"type:uuid;not null;index" json:"user_id"`
-	WalletID  string    `gorm:"type:uuid;not null;index" json:"wallet_id"`
-	Reference string    `gorm:"type:uuid;not null;uniqueIndex" json:"reference"`
+	ID       string `gorm:"type:uuid;primaryKey" json:"id"`
+	UserID   string `gorm:"type:uuid;not null;index" json:"user_id"`
+	WalletID string `gorm:"type:uuid;not null;index" json:"wallet_id"`
+
+	//  FIX: Change type:uuid to type:varchar(100) to allow custom "DEP-..." prefixes
+	Reference string `gorm:"type:varchar(100);not null;uniqueIndex" json:"reference"`
+
 	Amount    int64     `gorm:"not null;default:0" json:"amount"`
 	Currency  string    `gorm:"not null;default:'NGN'" json:"currency"`
 	Status    string    `gorm:"not null;default:'pending'" json:"status"`

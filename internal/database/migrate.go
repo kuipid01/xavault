@@ -29,6 +29,8 @@ func ClearDatabase(db *gorm.DB) {
 	err := db.Migrator().DropTable(
 		&users.User{},
 		&wallets.Wallet{},
+		&wallets.WalletDeposit{},
+		&client.IdempotentKey{},
 	)
 
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"github.com/kuipid01/salary-vault/internal/config"
 	"github.com/kuipid01/salary-vault/internal/shared/response"
 	"github.com/kuipid01/salary-vault/internal/wallets"
+	"github.com/kuipid01/salary-vault/internal/webhooks"
 )
 
 type handlers struct {
@@ -22,6 +23,7 @@ func RegisterRoutes(app *fiber.App, cfg *config.Config, container *Container) {
 	v1 := api.Group("/v1")
 	auth.RegisterAuthRoutes(v1, container.Auth.Hnd)
 	wallets.RegisterWalletRoutes(v1, container.Wallets.Hnd)
+	webhooks.RegisterWebhooksRoutes(v1, container.WebhookHND)
 	v1.Get("/", func(c *fiber.Ctx) error {
 
 		return response.Success(c, fiber.StatusOK, "Salary Vault API V1", nil)
