@@ -28,3 +28,28 @@ type WalletDeposit struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+type WalletLedger struct {
+	ID       string `gorm:"type:uuid;primaryKey" json:"id"`
+	UserID   string `gorm:"type:uuid;not null;index" json:"user_id"`
+	WalletID string `gorm:"type:uuid;not null;index" json:"wallet_id"`
+
+	Currency string `gorm:"not null;default:'NGN'" json:"currency"`
+
+	Reference string `gorm:"not null;uniqueIndex"`
+
+	Type string `gorm:"not null;index"`
+	// credit, debit, lock, unlock
+
+	Source string `gorm:"not null;index"`
+	// deposit, withdrawal, spending_plan
+
+	SourceID string
+
+	Amount        int64 `gorm:"not null"`
+	BalanceBefore int64 `gorm:"not null"`
+	BalanceAfter  int64 `gorm:"not null"`
+
+	Description string
+	CreatedAt   time.Time
+}

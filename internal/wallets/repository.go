@@ -130,3 +130,21 @@ func (repo *WalletRepository) GetWalletDepositsByUserID(userID string) ([]Wallet
 
 	return deposits, nil
 }
+
+func (repo *WalletRepository) LogWalletLedger(walletLedger *WalletLedger) (*WalletLedger, error) {
+	if err := repo.db.Create(walletLedger).Error; err != nil {
+		return nil, err
+	}
+
+	return walletLedger, nil
+}
+
+func (repo *WalletRepository) GetWalletLedgerByUserId(userId string) ([]WalletLedger, error) {
+	var walletLedger []WalletLedger
+
+	if err := repo.db.Where("user_id = ?", userId).Order("created_at DESC").Find(&walletLedger).Error; err != nil {
+		return nil, err
+	}
+
+	return walletLedger, nil
+}

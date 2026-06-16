@@ -238,6 +238,26 @@ func (s *WalletService) CreditWallet(reference string, webhookAmount int64) *res
 		if _, err := txRepo.Update(wallet); err != nil {
 			return err
 		}
+		// log in ledger
+		id := security.GenateUniqueID()
+		now := time.Now()
+		walletReq := &WalletLedger{
+			ID:            id,
+			Amount:        webhookAmount,
+			UserID:        walletdeposit.UserID,
+			WalletID:      walletdeposit.WalletID,
+			Currency:      walletdeposit.Currency,
+			Type:          "credit",
+			BalanceBefore: wallet.AvailableBalance,
+			BalanceAfter:  wallet.AvailableBalance + webhookAmount,
+			Reference:     reference,
+			CreatedAt:     now,
+			Source:        "Paystack",
+		}
+		if _, err := txRepo.LogWalletLedger(walletReq); err != nil {
+
+			return err
+		}
 
 		return nil
 	})
@@ -272,4 +292,92 @@ func (s *WalletService) GetAllDeposits(userId string) *response.APIResponse {
 		Message: "Wallet credited successfully",
 		Data:    walletdeposit,
 	}
+}
+
+func (s *WalletService) LogWalletLedger(req WalletLedger) *response.APIResponse {
+
+	ledger, err := s.repo.LogWalletLedger(&req)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Failed to log wallet ledger",
+			Error:   err.Error(),
+		}
+	}
+
+	return &response.APIResponse{
+		Success: true,
+		Message: "Wallet ledger logged successfully",
+		Data:    ledger,
+	}
+}
+func (s *WalletService) GetMyWalletLedger(userId string) *response.APIResponse {
+
+	ledger, err := s.repo.GetWalletLedgerByUserId(userId)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Failed to get wallet ledger",
+			Error:   err.Error(),
+		}
+	}
+
+	return &response.APIResponse{
+		Success: true,
+		Message: "Wallet ledger retrieved successfully",
+		Data:    ledger,
+	}
+}
+func (s *WalletService) GetDepositByReference(reference string) *response.APIResponse {
+	deposit, err := s.repo.GetDepositByReference(reference)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Failed to get deposit",
+			Error:   err.Error(),
+		}
+	}
+
+	return &response.APIResponse{
+		Success: true,
+		Message: "Deposit retrieved successfully",
+		Data:    deposit,
+	}
+}
+func (s *WalletService) VerifyDeposit(ctx context.Context, reference string) *response.APIResponse {
+	_, err := s.repo.GetDepositByReference(reference)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Failed to get deposit",
+			Error:   err.Error(),
+		}
+	}
+
+	// Hit Paystack
+	verificationResult, err := s.payment.VerifyDeposit(ctx, reference)
+
+	// 2. Funnel execution through the idempotency machine
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Failed to process deposit request",
+			Error:   err.Error(),
+		}
+	}
+
+	if !verificationResult.Status {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Deposit not verified",
+			Error:   "deposit_not_verified",
+		}
+	}
+
+	return &response.APIResponse{
+		Success: true,
+		Message: "Deposit verified successfully",
+		Data:    verificationResult,
+	}
+
 }

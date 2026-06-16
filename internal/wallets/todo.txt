@@ -1,25 +1,499 @@
-GET    /wallet
-GET    /wallet/summary
+Yes, that route set is a good **wallet foundation**:
 
-POST   /wallet/deposits/initiate
-POST   /wallet/deposits/mock-confirm
-GET    /wallet/deposits
-GET    /wallet/deposits/:reference
+```go
+wallet.Get("/", h.GetMyWallet)
+wallet.Post("/deposit/initiate", h.InitiateDeposit)
+wallet.Get("/deposits", h.GetAllDeposits)
+wallet.Get("/ledger", h.GetMyWalletLedger)
+```
 
-GET    /wallet/ledger
+But before moving fully into envelopes, I’d add **one or two missing wallet routes** so the flow feels complete and logical.
 
-POST   /wallet/plan-funding/preview
-POST   /wallet/plan-funding/lock
-POST   /wallet/plan-funding/release
+Your product doc says the main flow is: user has wallet, deposits money, creates spending plan, creates top-level envelopes, creates sub-envelopes, validates parent-child amounts, previews, confirms, then withdraws according to rules. 
 
-POST   /wallet/withdrawals/preview
-POST   /wallet/withdrawals
-GET    /wallet/withdrawals
-GET    /wallet/withdrawals/:reference
+So the development order should be:
 
+```txt
+Auth
+↓
+Wallet
+↓
+Deposits
+↓
+Ledger
+↓
+Spending Plans
+↓
+Envelopes
+↓
+Sub-envelopes
+↓
+Plan preview/confirmation
+↓
+Withdrawals
+```
 
+## 1. Finish wallet module first
 
+Your current wallet routes:
 
-GET    /admin/wallets
-GET    /admin/wallets/:userId
-GET    /admin/wallets/:walletId/ledger
+```go
+func RegisterWalletRoutes(v1 fiber.Router, h *WalletHandler) {
+	wallet := v1.Group("/wallet", middleware.Protected(os.Getenv("JWT_ACCESS_SECRET")))
+
+	wallet.Get("/", h.GetMyWallet)
+	wallet.Post("/deposit/initiate", h.InitiateDeposit)
+	wallet.Get("/deposits", h.GetAllDeposits)
+	wallet.Get("/ledger", h.GetMyWalletLedger)
+}
+```
+
+I’d make it:
+
+```go
+func RegisterWalletRoutes(v1 fiber.Router, h *WalletHandler) {
+	wallet := v1.Group("/wallet", middleware.Protected(os.Getenv("JWT_ACCESS_SECRET")))
+
+	wallet.Get("/", h.GetMyWallet)
+	wallet.Get("/summary", h.GetWalletSummary)
+
+	wallet.Post("/deposits/initiate", h.InitiateDeposit)
+	wallet.Get("/deposits", h.GetAllDeposits)
+	wallet.Get("/deposits/:reference", h.GetDepositByReference)
+	wallet.Post("/deposits/:reference/verify", h.VerifyDeposit)
+
+	wallet.Get("/ledger", h.GetMyWalletLedger)
+}
+```
+
+This gives you a complete deposit flow:
+
+```txt
+User initiates deposit
+↓
+Pending deposit is saved
+↓
+User pays through Paystack
+↓
+Webhook or verify confirms deposit
+↓
+Wallet balance updates
+↓
+Ledger entry is created
+↓
+User can now create spending plan
+```
+
+The reason `verify` is useful is that webhook can delay. The mobile app can call verify after Paystack redirect.
+
+---
+
+# 2. Next module should be spending plans
+
+A spending plan is where wallet money becomes organized money.
+
+The document says wallet money is free until the user places some of it into a spending plan. It also separates wallet leftover from plan unboxed balance, which is important for your backend model. 
+
+## Spending plan routes
+
+```go
+func RegisterPlanRoutes(v1 fiber.Router, h *PlanHandler) {
+	plans := v1.Group("/plans", middleware.Protected(os.Getenv("JWT_ACCESS_SECRET")))
+
+	plans.Post("/", h.CreateDraftPlan)
+	plans.Get("/", h.GetMyPlans)
+	plans.Get("/:planId", h.GetPlanByID)
+	plans.Patch("/:planId", h.UpdateDraftPlan)
+	plans.Post("/:planId/preview", h.PreviewPlan)
+	plans.Post("/:planId/confirm", h.ConfirmPlan)
+	plans.Post("/:planId/cancel", h.CancelPlan)
+}
+```
+
+## Route flow
+
+### `POST /plans`
+
+Creates a draft spending plan.
+
+Request:
+
+```json
+{
+  "name": "June Salary Plan",
+  "amount": 15000000,
+  "startDate": "2026-06-20",
+  "endDate": "2026-07-20",
+  "unboxedBalancePolicy": "flexible"
+}
+```
+
+Data flow:
+
+```txt
+1. Get userID from auth
+2. Find user wallet
+3. Validate amount > 0
+4. Check wallet available balance
+5. If wallet balance is not enough, reject
+6. Create plan with status = draft
+7. Do not lock wallet money yet, or lock it only when user confirms
+```
+
+For simple MVP, I recommend:
+
+```txt
+Create draft plan without locking wallet funds.
+Lock wallet funds on confirm.
+```
+
+That reduces headache while user is still editing envelopes.
+
+---
+
+### `POST /plans/:planId/preview`
+
+This checks if the plan is valid before confirmation.
+
+Data flow:
+
+```txt
+1. Find plan
+2. Confirm user owns plan
+3. Get all top-level envelopes
+4. Sum top-level envelope amounts
+5. Calculate plan unboxed balance
+6. Validate top-level envelope total <= plan amount
+7. Validate nested child envelopes recursively
+8. Validate child dates inside parent dates
+9. Return preview with errors or success
+```
+
+Your doc says child envelope totals must never exceed the direct parent amount, and child dates must stay inside parent dates. 
+
+---
+
+### `POST /plans/:planId/confirm`
+
+This is the serious money movement route.
+
+Data flow:
+
+```txt
+1. Find plan
+2. Confirm user owns plan
+3. Run full preview validation again
+4. Find wallet
+5. Check wallet available balance >= plan amount
+6. Start DB transaction
+7. Decrease wallet available balance
+8. Increase wallet locked balance
+9. Create wallet ledger entry type = lock
+10. Mark plan as active
+11. Mark envelopes as scheduled/active depending on dates
+12. Create audit log
+13. Commit transaction
+```
+
+This is where wallet ledger is created because wallet balance changed.
+
+---
+
+# 3. Then build envelopes
+
+Your doc says every envelope can have child envelopes, and the main rule is:
+
+```txt
+Sum(children of envelope) <= direct parent envelope amount
+```
+
+It also says a direct parent withdrawal should only use the parent’s unboxed balance, not drain child balances. 
+
+## Envelope routes
+
+```go
+func RegisterEnvelopeRoutes(v1 fiber.Router, h *EnvelopeHandler) {
+	envelopes := v1.Group("/plans/:planId/envelopes", middleware.Protected(os.Getenv("JWT_ACCESS_SECRET")))
+
+	envelopes.Post("/", h.CreateEnvelope)
+	envelopes.Get("/", h.GetPlanEnvelopes)
+	envelopes.Get("/:envelopeId", h.GetEnvelopeByID)
+	envelopes.Patch("/:envelopeId", h.UpdateEnvelope)
+	envelopes.Delete("/:envelopeId", h.DeleteEnvelope)
+
+	envelopes.Post("/:envelopeId/children", h.CreateChildEnvelope)
+	envelopes.Get("/:envelopeId/children", h.GetChildEnvelopes)
+}
+```
+
+You could also use one create route and pass `parentEnvelopeId`.
+
+Better MVP request:
+
+```json
+{
+  "name": "Food",
+  "amount": 2000000,
+  "startDate": "2026-06-20",
+  "endDate": "2026-06-27",
+  "parentEnvelopeId": null,
+  "unboxedBalancePolicy": "flexible"
+}
+```
+
+For a child envelope:
+
+```json
+{
+  "name": "Groceries",
+  "amount": 1000000,
+  "startDate": "2026-06-21",
+  "endDate": "2026-06-24",
+  "parentEnvelopeId": 5,
+  "unboxedBalancePolicy": "locked_until_parent_ends"
+}
+```
+
+## Create envelope data flow
+
+```txt
+1. Get userID from auth
+2. Find plan by planId
+3. Confirm user owns plan
+4. Confirm plan is still draft
+5. If parentEnvelopeId is null:
+   - validate total top-level envelopes + new amount <= plan amount
+   - validate envelope dates inside plan dates
+6. If parentEnvelopeId exists:
+   - find parent envelope
+   - confirm parent belongs to same plan
+   - validate sibling total + new amount <= parent amount
+   - validate child dates inside parent dates
+7. Create envelope
+8. Return envelope
+```
+
+Important:
+
+```txt
+For MVP, only allow creating/editing envelopes while plan is draft.
+```
+
+That keeps your logic clean.
+
+---
+
+# 4. Suggested models
+
+## SpendingPlan
+
+```go
+type SpendingPlan struct {
+	ID        uint `gorm:"primaryKey"`
+	UserID    uint `gorm:"not null;index"`
+	WalletID  uint `gorm:"not null;index"`
+
+	Name      string `gorm:"not null"`
+	Amount    int64  `gorm:"not null"`
+	Currency  string `gorm:"not null;default:NGN"`
+
+	Status string `gorm:"not null;index"` 
+	// draft, active, completed, cancelled, expired
+
+	UnboxedBalancePolicy string `gorm:"not null;default:flexible"`
+	// flexible, locked_until_plan_ends
+
+	StartDate time.Time
+	EndDate   time.Time
+
+	ConfirmedAt *time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+```
+
+## Envelope
+
+```go
+type Envelope struct {
+	ID        uint `gorm:"primaryKey"`
+	UserID    uint `gorm:"not null;index"`
+	PlanID    uint `gorm:"not null;index"`
+
+	ParentEnvelopeID *uint `gorm:"index"`
+
+	Name     string `gorm:"not null"`
+	Amount   int64  `gorm:"not null"`
+	Currency string `gorm:"not null;default:NGN"`
+
+	Status string `gorm:"not null;index"`
+	// draft, scheduled, active, locked, depleted, expired, cancelled
+
+	UnboxedBalancePolicy string `gorm:"not null;default:flexible"`
+	// flexible, locked_until_parent_ends
+
+	StartDate time.Time
+	EndDate   time.Time
+
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+```
+
+Later, you can add:
+
+```go
+WithdrawnAmount int64
+```
+
+or compute it from withdrawal/ledger records.
+
+---
+
+# 5. Development flow that feels logical
+
+Do it like this:
+
+## Phase 1: Wallet complete
+
+```txt
+GET /wallet
+GET /wallet/summary
+POST /wallet/deposits/initiate
+GET /wallet/deposits
+GET /wallet/deposits/:reference
+POST /wallet/deposits/:reference/verify
+GET /wallet/ledger
+```
+
+Result:
+
+```txt
+User can have wallet money.
+```
+
+---
+
+## Phase 2: Spending plan draft
+
+```txt
+POST /plans
+GET /plans
+GET /plans/:planId
+PATCH /plans/:planId
+POST /plans/:planId/cancel
+```
+
+Result:
+
+```txt
+User can create a draft plan from wallet balance.
+```
+
+---
+
+## Phase 3: Envelopes
+
+```txt
+POST /plans/:planId/envelopes
+GET /plans/:planId/envelopes
+GET /plans/:planId/envelopes/:envelopeId
+PATCH /plans/:planId/envelopes/:envelopeId
+DELETE /plans/:planId/envelopes/:envelopeId
+```
+
+Result:
+
+```txt
+User can box money inside the plan.
+```
+
+---
+
+## Phase 4: Nested envelopes
+
+Same create route, but with:
+
+```json
+{
+  "parentEnvelopeId": 5
+}
+```
+
+Result:
+
+```txt
+User can create sub-envelopes.
+```
+
+---
+
+## Phase 5: Preview and confirm
+
+```txt
+POST /plans/:planId/preview
+POST /plans/:planId/confirm
+```
+
+Result:
+
+```txt
+System validates everything.
+Wallet money becomes locked.
+Plan becomes active.
+```
+
+---
+
+## Phase 6: Withdrawals
+
+```txt
+POST /withdrawals/preview
+POST /withdrawals
+GET /withdrawals
+GET /withdrawals/:reference
+```
+
+Result:
+
+```txt
+User can withdraw according to envelope rules.
+```
+
+---
+
+# My recommendation for your next exact routes
+
+After your wallet routes, build this next:
+
+```go
+func RegisterPlanRoutes(v1 fiber.Router, h *PlanHandler) {
+	plans := v1.Group("/plans", middleware.Protected(os.Getenv("JWT_ACCESS_SECRET")))
+
+	plans.Post("/", h.CreateDraftPlan)
+	plans.Get("/", h.GetMyPlans)
+	plans.Get("/:planId", h.GetPlanByID)
+	plans.Patch("/:planId", h.UpdateDraftPlan)
+	plans.Post("/:planId/preview", h.PreviewPlan)
+	plans.Post("/:planId/confirm", h.ConfirmPlan)
+	plans.Post("/:planId/cancel", h.CancelPlan)
+}
+```
+
+Then:
+
+```go
+func RegisterEnvelopeRoutes(v1 fiber.Router, h *EnvelopeHandler) {
+	envelopes := v1.Group("/plans/:planId/envelopes", middleware.Protected(os.Getenv("JWT_ACCESS_SECRET")))
+
+	envelopes.Post("/", h.CreateEnvelope)
+	envelopes.Get("/", h.GetPlanEnvelopes)
+	envelopes.Get("/:envelopeId", h.GetEnvelopeByID)
+	envelopes.Patch("/:envelopeId", h.UpdateEnvelope)
+	envelopes.Delete("/:envelopeId", h.DeleteEnvelope)
+}
+```
+
+Keep child envelopes inside the same create route using `parentEnvelopeId`.
+
+That’s the cleanest route design.

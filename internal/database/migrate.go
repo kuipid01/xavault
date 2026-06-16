@@ -16,6 +16,7 @@ func RunMigrations(db *gorm.DB) {
 		&wallets.Wallet{},
 		&wallets.WalletDeposit{},
 		&client.IdempotentKey{},
+		&wallets.WalletLedger{},
 	)
 
 	if err != nil {
@@ -31,6 +32,7 @@ func ClearDatabase(db *gorm.DB) {
 		&wallets.Wallet{},
 		&wallets.WalletDeposit{},
 		&client.IdempotentKey{},
+		&wallets.WalletLedger{},
 	)
 
 	if err != nil {

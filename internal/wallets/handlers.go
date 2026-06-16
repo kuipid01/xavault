@@ -54,3 +54,43 @@ func (h *WalletHandler) GetAllDeposits(c *fiber.Ctx) error {
 
 	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
 }
+
+func (h *WalletHandler) GetMyWalletLedger(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(string)
+
+	result := h.svc.GetMyWalletLedger(userID)
+
+	if result.Error != nil {
+		return response.Error(c, fiber.StatusBadRequest, result.Message, result.Error)
+	}
+
+	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
+}
+func (h *WalletHandler) VerifyDeposit(c *fiber.Ctx) error {
+	reference := c.Params("reference")
+	if reference == "" {
+		return response.Error(c, fiber.StatusBadRequest, "Invalid request payload", "")
+	}
+	ctx := c.UserContext()
+	result := h.svc.VerifyDeposit(ctx, reference)
+
+	if result.Error != nil {
+		return response.Error(c, fiber.StatusBadRequest, result.Message, result.Error)
+	}
+
+	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
+}
+func (h *WalletHandler) GetDepositByReference(c *fiber.Ctx) error {
+	reference := c.Params("reference")
+	if reference == "" {
+		return response.Error(c, fiber.StatusBadRequest, "Invalid request payload", "")
+	}
+
+	result := h.svc.GetDepositByReference(reference)
+
+	if result.Error != nil {
+		return response.Error(c, fiber.StatusBadRequest, result.Message, result.Error)
+	}
+
+	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
+}
