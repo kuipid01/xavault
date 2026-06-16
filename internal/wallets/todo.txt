@@ -1,0 +1,25 @@
+GET    /wallet
+GET    /wallet/summary
+
+POST   /wallet/deposits/initiate
+POST   /wallet/deposits/mock-confirm
+GET    /wallet/deposits
+GET    /wallet/deposits/:reference
+
+GET    /wallet/ledger
+
+POST   /wallet/plan-funding/preview
+POST   /wallet/plan-funding/lock
+POST   /wallet/plan-funding/release
+
+POST   /wallet/withdrawals/preview
+POST   /wallet/withdrawals
+GET    /wallet/withdrawals
+GET    /wallet/withdrawals/:reference
+
+
+
+
+GET    /admin/wallets
+GET    /admin/wallets/:userId
+GET    /admin/wallets/:walletId/ledger

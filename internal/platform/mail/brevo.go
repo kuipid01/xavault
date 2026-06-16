@@ -15,6 +15,7 @@ type BrevoMailer struct {
 }
 
 func NewBrevoMailer() *BrevoMailer {
+
 	return &BrevoMailer{
 		APIKey:      os.Getenv("BREVO_API_KEY"),
 		SenderName:  os.Getenv("BREVO_SENDER_NAME"),

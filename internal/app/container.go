@@ -3,6 +3,8 @@ package app
 import (
 	"github.com/kuipid01/salary-vault/internal/auth"
 	"github.com/kuipid01/salary-vault/internal/config"
+	"github.com/kuipid01/salary-vault/internal/platform/mail"
+	client "github.com/kuipid01/salary-vault/internal/shared/client/idempotence"
 	"github.com/kuipid01/salary-vault/internal/wallets"
 	"gorm.io/gorm"
 )
@@ -13,10 +15,13 @@ type Container struct {
 }
 
 func NewContainer(db *gorm.DB, cfg *config.Config) *Container {
-
+	idempotencyRepo := client.NewIdempotentRepository(db)
+	idempotencyManager := client.NewIdempotentRequest(idempotencyRepo)
+	walletModule := wallets.NewWalletModule(db, idempotencyManager)
+	mailer := mail.NewBrevoMailer()
 	return &Container{
-		Auth:    auth.NewModule(db),
-		Wallets: wallets.NewWalletModule(db),
+		Auth:    auth.NewModule(db, walletModule.Svc, mailer),
+		Wallets: walletModule,
 	}
 
 }

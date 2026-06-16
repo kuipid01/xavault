@@ -12,16 +12,18 @@ import (
 	"github.com/kuipid01/salary-vault/internal/platform/mail"
 	"github.com/kuipid01/salary-vault/internal/shared/response"
 	"github.com/kuipid01/salary-vault/internal/users"
+	"github.com/kuipid01/salary-vault/internal/wallets"
 )
 
 type AuthService struct {
-	repository   *users.UserRepository
-	mailer       mail.Mailer
-	tokenService *TokenService
+	repository    *users.UserRepository
+	mailer        mail.Mailer
+	tokenService  *TokenService
+	walletService *wallets.WalletService
 }
 
-func NewAuthService(repository *users.UserRepository, mailer mail.Mailer, tokenService *TokenService) *AuthService {
-	return &AuthService{repository: repository, mailer: mailer, tokenService: tokenService}
+func NewAuthService(repository *users.UserRepository, mailer mail.Mailer, tokenService *TokenService, walletService *wallets.WalletService) *AuthService {
+	return &AuthService{repository: repository, mailer: mailer, tokenService: tokenService, walletService: walletService}
 }
 
 func (s *AuthService) Register(req RegisterRequest) *response.APIResponse {
@@ -76,6 +78,7 @@ func (s *AuthService) Register(req RegisterRequest) *response.APIResponse {
 			Error:   err,
 		}
 	}
+	s.walletService.CreateWallet(finalUser.ID)
 	return &response.APIResponse{
 		Success: true,
 		Message: "Registration successful",
