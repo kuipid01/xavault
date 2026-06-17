@@ -11,7 +11,7 @@ type EnvelopeRepo struct {
 	db *gorm.DB
 }
 
-func NewRepo(db *gorm.DB) *EnvelopeRepo {
+func NewEnvelopeRepo(db *gorm.DB) *EnvelopeRepo {
 	return &EnvelopeRepo{db: db}
 }
 
@@ -95,7 +95,9 @@ func (repo *EnvelopeRepo) SumTopLevelEnvelopeAmountTx(tx *gorm.DB, planID string
 
 	return total, err
 }
-
+func (repo *EnvelopeRepo) SumTopLevelEnvelopeAmount(planID string) (int64, error) {
+	return repo.SumTopLevelEnvelopeAmountTx(repo.db, planID)
+}
 func (repo *EnvelopeRepo) SumTopLevelEnvelopeAmountExcludingTx(
 	tx *gorm.DB,
 	planID string,

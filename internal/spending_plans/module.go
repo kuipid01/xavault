@@ -6,15 +6,16 @@ import (
 )
 
 type SpendingPlanModule struct {
-	Handler    *PlanHandler
-	service    *PlanService
-	Repo       *PlanRepository
-	walletRepo *wallets.WalletRepository
+	Handler        *PlanHandler
+	service        *PlanService
+	Repo           *PlanRepository
+	walletRepo     *wallets.WalletRepository
+	envelopeReader EnvelopeAllocationReader
 }
 
-func NewSpendingPlanModule(database *gorm.DB, walletRepo *wallets.WalletRepository) *SpendingPlanModule {
+func NewSpendingPlanModule(database *gorm.DB, walletRepo *wallets.WalletRepository, envelopeReader EnvelopeAllocationReader) *SpendingPlanModule {
 	repo := NewPlanRepository(database)
-	service := NewPlanService(repo, walletRepo)
+	service := NewPlanService(repo, walletRepo, envelopeReader)
 	handler := NewPlanHandler(service)
 	return &SpendingPlanModule{Repo: repo, service: service, Handler: handler}
 }

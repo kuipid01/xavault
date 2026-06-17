@@ -12,12 +12,13 @@ import (
 )
 
 type PlanService struct {
-	repository *PlanRepository
-	walletRepo *wallets.WalletRepository
+	repository     *PlanRepository
+	walletRepo     *wallets.WalletRepository
+	envelopeReader EnvelopeAllocationReader
 }
 
-func NewPlanService(r *PlanRepository, walletRepo *wallets.WalletRepository) *PlanService {
-	return &PlanService{repository: r, walletRepo: walletRepo}
+func NewPlanService(r *PlanRepository, walletRepo *wallets.WalletRepository, envelopeReader EnvelopeAllocationReader) *PlanService {
+	return &PlanService{repository: r, walletRepo: walletRepo, envelopeReader: envelopeReader}
 }
 
 func (s *PlanService) CreateDraftPlan(userID string, req CreatePlanRequest) *response.APIResponse {
@@ -142,7 +143,15 @@ func (s *PlanService) GetMyPlans(userID string, query ListPlansQuery) *response.
 
 	for _, plan := range plans {
 		// For now, allocated amount is 0 until envelope repository is connected.
-		items = append(items, mapPlanToResponse(&plan, 0))
+		topLevelAmount, err := s.envelopeReader.SumTopLevelEnvelopeAmount(plan.ID)
+		if err != nil {
+			return &response.APIResponse{
+				Success: false,
+				Message: "Could not fetch spending plan",
+				Error:   err,
+			}
+		}
+		items = append(items, mapPlanToResponse(&plan, topLevelAmount))
 	}
 
 	return &response.APIResponse{
@@ -379,8 +388,14 @@ func (s *PlanService) PreviewPlan(userID string, planID string) *response.APIRes
 		})
 	}
 
-	// Envelope calculation will be connected when envelope module is ready.
-	topLevelAllocated := int64(0)
+	topLevelAllocated, err := s.envelopeReader.SumTopLevelEnvelopeAmount(plan.ID)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not fetch spending plan",
+			Error:   err,
+		}
+	}
 	planUnboxedBalance := plan.Amount - topLevelAllocated
 
 	canConfirm := len(validationErrors) == 0

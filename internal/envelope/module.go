@@ -12,7 +12,7 @@ type EnvelopeModule struct {
 }
 
 func NewEnvelopeModule(db *gorm.DB, planRepo *spendingplans.PlanRepository) *EnvelopeModule {
-	repo := NewRepo(db)
+	repo := NewEnvelopeRepo(db)
 	svc := NewEnvelopeService(repo, planRepo)
 	handler := NewEnvelopeHandler(svc)
 

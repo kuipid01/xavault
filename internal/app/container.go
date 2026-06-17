@@ -23,16 +23,34 @@ type Container struct {
 func NewContainer(db *gorm.DB, cfg *config.Config) *Container {
 	idempotencyRepo := client.NewIdempotentRepository(db)
 	idempotencyManager := client.NewIdempotentRequest(idempotencyRepo, true)
+
 	walletModule := wallets.NewWalletModule(db, idempotencyManager)
-	planModule := spendingplans.NewSpendingPlanModule(db, walletModule.Repo)
-	envelopeModule := envelope.NewEnvelopeModule(db, planModule.Repo)
+
+	planRepo := spendingplans.NewPlanRepository(db)
+	envelopeRepo := envelope.NewEnvelopeRepo(db)
+
+	planService := spendingplans.NewPlanService(
+		planRepo,
+		walletModule.Repo,
+		envelopeRepo,
+	)
+
+	planHandler := spendingplans.NewPlanHandler(planService)
+
+	envelopeService := envelope.NewEnvelopeService(
+		envelopeRepo,
+		planRepo,
+	)
+
+	envelopeHandler := envelope.NewEnvelopeHandler(envelopeService)
+
 	mailer := mail.NewBrevoMailer()
+
 	return &Container{
 		Auth:       auth.NewModule(db, walletModule.Svc, mailer),
 		Wallets:    walletModule,
 		WebhookHND: webhooks.NewWebhookHandler(walletModule.Svc),
-		PlansHND:   planModule.Handler,
-		EnvelopHND: envelopeModule.Hnd,
+		PlansHND:   planHandler,
+		EnvelopHND: envelopeHandler,
 	}
-
 }
