@@ -25,7 +25,7 @@ func NewContainer(db *gorm.DB, cfg *config.Config) *Container {
 	idempotencyManager := client.NewIdempotentRequest(idempotencyRepo, true)
 	walletModule := wallets.NewWalletModule(db, idempotencyManager)
 	planModule := spendingplans.NewSpendingPlanModule(db, walletModule.Repo)
-	envelopeModule := envelope.NewEnvelopeModule(db)
+	envelopeModule := envelope.NewEnvelopeModule(db, planModule.Repo)
 	mailer := mail.NewBrevoMailer()
 	return &Container{
 		Auth:       auth.NewModule(db, walletModule.Svc, mailer),

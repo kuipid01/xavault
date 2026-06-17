@@ -8,7 +8,7 @@ import (
 type SpendingPlanModule struct {
 	Handler    *PlanHandler
 	service    *PlanService
-	repo       *PlanRepository
+	Repo       *PlanRepository
 	walletRepo *wallets.WalletRepository
 }
 
@@ -16,5 +16,5 @@ func NewSpendingPlanModule(database *gorm.DB, walletRepo *wallets.WalletReposito
 	repo := NewPlanRepository(database)
 	service := NewPlanService(repo, walletRepo)
 	handler := NewPlanHandler(service)
-	return &SpendingPlanModule{repo: repo, service: service, Handler: handler}
+	return &SpendingPlanModule{Repo: repo, service: service, Handler: handler}
 }

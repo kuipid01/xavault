@@ -3,6 +3,7 @@ package database
 import (
 	"log"
 
+	"github.com/kuipid01/salary-vault/internal/envelope"
 	client "github.com/kuipid01/salary-vault/internal/shared/client/idempotence"
 	spendingplans "github.com/kuipid01/salary-vault/internal/spending_plans"
 	"github.com/kuipid01/salary-vault/internal/users"
@@ -19,6 +20,7 @@ func RunMigrations(db *gorm.DB) {
 		&client.IdempotentKey{},
 		&wallets.WalletLedger{},
 		&spendingplans.SpendingPlan{},
+		&envelope.Envelope{},
 	)
 
 	if err != nil {

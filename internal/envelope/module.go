@@ -1,6 +1,7 @@
 package envelope
 
 import (
+	spendingplans "github.com/kuipid01/salary-vault/internal/spending_plans"
 	"gorm.io/gorm"
 )
 
@@ -10,9 +11,9 @@ type EnvelopeModule struct {
 	Hnd  *EnvelopeHandler
 }
 
-func NewEnvelopeModule(db *gorm.DB) *EnvelopeModule {
+func NewEnvelopeModule(db *gorm.DB, planRepo *spendingplans.PlanRepository) *EnvelopeModule {
 	repo := NewRepo(db)
-	svc := NewEnvelopeService(repo, nil)
+	svc := NewEnvelopeService(repo, planRepo)
 	handler := NewEnvelopeHandler(svc)
 
 	return &EnvelopeModule{

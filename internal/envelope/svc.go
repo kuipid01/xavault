@@ -86,8 +86,8 @@ func (s *EnvelopeService) CreateEnvelope(userID string, planID string, req Creat
 			return ErrPlanNotFound
 		}
 
-		if plan.Status != spendingplans.PlanStatusDraft {
-			return ErrPlanNotDraft
+		if plan.Status != spendingplans.PlanStatusActive {
+			return spendingplans.ErrPlanNotActive
 		}
 
 		parentEnvelopeID := normalizeOptionalString(req.ParentEnvelopeID)
@@ -461,6 +461,11 @@ func (s *EnvelopeService) DeleteEnvelope(userID string, planID string, envelopeI
 		}
 	}
 
+	var deletedEnvelope *Envelope
+	var releasedTo string
+	var releasedToID *string
+	var releasedAmount int64
+
 	err := s.repo.WithTransaction(func(tx *gorm.DB) error {
 		plan, err := s.planRepo.FindByIDAndUserIDForUpdate(tx, planID, userID)
 		if err != nil {
@@ -471,8 +476,8 @@ func (s *EnvelopeService) DeleteEnvelope(userID string, planID string, envelopeI
 			return ErrPlanNotFound
 		}
 
-		if plan.Status != spendingplans.PlanStatusDraft {
-			return ErrPlanNotDraft
+		if plan.Status != spendingplans.PlanStatusActive {
+			return spendingplans.ErrPlanNotActive
 		}
 
 		envelope, err := s.repo.FindByIDPlanIDAndUserIDForUpdate(tx, envelopeID, planID, userID)
@@ -484,6 +489,16 @@ func (s *EnvelopeService) DeleteEnvelope(userID string, planID string, envelopeI
 			return ErrEnvelopeNotFound
 		}
 
+		// Locked envelopes cannot be deleted.
+		if envelope.UnboxedBalancePolicy == EnvelopeUnboxedPolicyLockedUntilParentEnds {
+			return ErrEnvelopeLockedCannotDelete
+		}
+
+		// Only flexible envelopes can be deleted.
+		if envelope.UnboxedBalancePolicy != EnvelopeUnboxedPolicyFlexible {
+			return ErrEnvelopeCannotDelete
+		}
+
 		childCount, err := s.repo.CountChildrenTx(tx, envelope.ID)
 		if err != nil {
 			return err
@@ -493,7 +508,24 @@ func (s *EnvelopeService) DeleteEnvelope(userID string, planID string, envelopeI
 			return ErrEnvelopeHasChildren
 		}
 
-		return s.repo.DeleteWithTx(tx, envelope)
+		releasedAmount = envelope.Amount
+
+		if envelope.ParentEnvelopeID == nil {
+			releasedTo = "plan"
+			releasedToID = &plan.ID
+		} else {
+			releasedTo = "parent_envelope"
+			releasedToID = envelope.ParentEnvelopeID
+		}
+
+		err = s.repo.DeleteWithTx(tx, envelope)
+		if err != nil {
+			return err
+		}
+
+		deletedEnvelope = envelope
+
+		return nil
 	})
 
 	if err != nil {
@@ -503,8 +535,12 @@ func (s *EnvelopeService) DeleteEnvelope(userID string, planID string, envelopeI
 	return &response.APIResponse{
 		Success: true,
 		Message: "Envelope deleted successfully",
-		Data: map[string]string{
-			"envelope_id": envelopeID,
+		Data: map[string]interface{}{
+			"envelope_id":     deletedEnvelope.ID,
+			"released_amount": releasedAmount,
+			"released_to":     releasedTo,
+			"released_to_id":  releasedToID,
+			"message":         "Envelope amount has been released back to the parent allocation.",
 		},
 	}
 }

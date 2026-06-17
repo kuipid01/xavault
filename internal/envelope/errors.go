@@ -11,4 +11,6 @@ var (
 	ErrEnvelopeInvalidDateRange       = errors.New("envelope date range is invalid")
 	ErrEnvelopeCannotBeParentOfItself = errors.New("envelope cannot be parent of itself")
 	ErrEnvelopeHasChildren            = errors.New("envelope has child envelopes")
+	ErrEnvelopeCannotDelete           = errors.New("envelope cannot be deleted")
+	ErrEnvelopeLockedCannotDelete     = errors.New("locked envelope cannot be deleted")
 )
