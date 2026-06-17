@@ -56,7 +56,38 @@ func (s *WithdrawalService) PreviewWithdrawal(
 			Error:   validationErrors,
 		}
 	}
+	plan, err := s.planRepo.FindByID(planID)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not fetch spending plan",
+			Error:   err,
+		}
+	}
 
+	if plan == nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Spending plan not found",
+			Error:   ErrPlanNotFound,
+		}
+	}
+
+	if plan.Status != spendingplans.PlanStatusActive {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Spending plan is not active",
+			Error:   ErrPlanNotActive,
+		}
+	}
+
+	if plan.UnboxedBalancePolicy == spendingplans.PlanUnboxedPolicyLockedUntilPlanEnds {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Spending plan is locked until the plan ends",
+			Error:   ErrSpendingPlanLockedUntilPlanEnds,
+		}
+	}
 	preview, err := s.calculateWithdrawalPreview(userID, planID, req.SourceType, req.EnvelopeID, req.Amount)
 
 	if err != nil {

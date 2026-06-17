@@ -59,15 +59,21 @@ func (r *WithdrawalRepository) FindByPlanIDAndUserID(planID string, userID strin
 
 	return withdrawals, nil
 }
+func (r *WithdrawalRepository) dbOrTx(tx *gorm.DB) *gorm.DB {
+	if tx != nil {
+		return tx
+	}
 
+	return r.db
+}
 func (r *WithdrawalRepository) SumPaidPlanUnboxedWithdrawalsTx(
 	tx *gorm.DB,
 	planID string,
 	userID string,
 ) (int64, error) {
 	var total int64
-
-	err := tx.
+	db := r.dbOrTx(tx)
+	err := db.
 		Model(&Withdrawal{}).
 		Where(
 			"plan_id = ? AND user_id = ? AND source_type = ? AND status = ?",

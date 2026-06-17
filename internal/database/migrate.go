@@ -8,6 +8,7 @@ import (
 	spendingplans "github.com/kuipid01/salary-vault/internal/spending_plans"
 	"github.com/kuipid01/salary-vault/internal/users"
 	"github.com/kuipid01/salary-vault/internal/wallets"
+	"github.com/kuipid01/salary-vault/internal/withdrawals"
 	"gorm.io/gorm"
 )
 
@@ -21,6 +22,7 @@ func RunMigrations(db *gorm.DB) {
 		&wallets.WalletLedger{},
 		&spendingplans.SpendingPlan{},
 		&envelope.Envelope{},
+		&withdrawals.Withdrawal{},
 	)
 
 	if err != nil {

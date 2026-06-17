@@ -196,10 +196,19 @@ func (s *PlanService) GetPlanByID(userID string, planID string) *response.APIRes
 		}
 	}
 
+	topLevelAmount, err := s.envelopeReader.SumTopLevelEnvelopeAmount(plan.ID)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not fetch spending plan",
+			Error:   err,
+		}
+	}
+
 	return &response.APIResponse{
 		Success: true,
 		Message: "Spending plan fetched successfully",
-		Data:    mapPlanToResponse(plan, 0),
+		Data:    mapPlanToResponse(plan, topLevelAmount),
 	}
 }
 
