@@ -1,6 +1,9 @@
 package wallets
 
-import "gorm.io/gorm"
+import (
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
 
 type WalletRepository struct {
 	db *gorm.DB
@@ -147,4 +150,51 @@ func (repo *WalletRepository) GetWalletLedgerByUserId(userId string) ([]WalletLe
 	}
 
 	return walletLedger, nil
+}
+
+func (repo *WalletRepository) LockFundsForSpendingPlanTx(
+	tx *gorm.DB,
+	userID string,
+	walletID string,
+	amount int64,
+) (*Wallet, int64, int64, error) {
+	var wallet Wallet
+
+	err := tx.
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ? AND user_id = ?", walletID, userID).
+		First(&wallet).Error
+
+	if err != nil {
+		return nil, 0, 0, err
+	}
+
+	if amount <= 0 {
+		return nil, 0, 0, ErrInvalidWalletAmount
+	}
+
+	if wallet.AvailableBalance < amount {
+		return nil, 0, 0, ErrInsufficientWalletBalance
+	}
+
+	balanceBefore := wallet.AvailableBalance
+
+	wallet.AvailableBalance -= amount
+	wallet.LockedBalance += amount
+
+	balanceAfter := wallet.AvailableBalance
+
+	err = tx.Save(&wallet).Error
+	if err != nil {
+		return nil, 0, 0, err
+	}
+
+	return &wallet, balanceBefore, balanceAfter, nil
+}
+
+func (repo *WalletRepository) CreateWalletLedgerTx(tx *gorm.DB, data *WalletLedger) (*WalletLedger, error) {
+	if err := tx.Create(data).Error; err != nil {
+		return nil, err
+	}
+	return data, nil
 }

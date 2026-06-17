@@ -2,7 +2,6 @@ package paymentproviders
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"os"
 
@@ -62,7 +61,7 @@ func (p *PaystackProvider) VerifyDeposit(ctx context.Context, reference string) 
 	if err != nil {
 		return nil, err
 	}
-	fmt.Println(respTarget, "HEY")
+
 	return &DepositResponse{
 		Status:  true,
 		Message: "Deposit verified successfully",

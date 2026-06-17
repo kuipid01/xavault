@@ -4,6 +4,7 @@ import (
 	"log"
 
 	client "github.com/kuipid01/salary-vault/internal/shared/client/idempotence"
+	spendingplans "github.com/kuipid01/salary-vault/internal/spending_plans"
 	"github.com/kuipid01/salary-vault/internal/users"
 	"github.com/kuipid01/salary-vault/internal/wallets"
 	"gorm.io/gorm"
@@ -17,6 +18,7 @@ func RunMigrations(db *gorm.DB) {
 		&wallets.WalletDeposit{},
 		&client.IdempotentKey{},
 		&wallets.WalletLedger{},
+		&spendingplans.SpendingPlan{},
 	)
 
 	if err != nil {
