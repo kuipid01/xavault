@@ -29,12 +29,12 @@ func (t *TokenService) GenerateAccessToken(userID string, email string, tokenTyp
 	now := time.Now()
 	var expireAt time.Time
 
-	if tokenType == "access" {
-		expireAt = now.Add(15 * time.Minute)
-	} else if tokenType == "refresh" {
-		expireAt = now.Add(7 * 24 * time.Hour)
+	if tokenType == TokenTypeAccess {
+		expireAt = now.Add(AuthTimeAccess * time.Minute)
+	} else if tokenType == TokenTypeRefresh {
+		expireAt = now.Add(AuthTimeRefresh * 24 * time.Hour)
 	} else {
-		expireAt = now.Add(15 * time.Minute)
+		expireAt = now.Add(AuthTimeAccess * time.Minute)
 	}
 	claims := AccessTokenClaims{
 		UserID: userID,

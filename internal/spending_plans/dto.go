@@ -101,9 +101,11 @@ type ConfirmPlanResponse struct {
 }
 
 type CancelPlanResponse struct {
-	Plan    PlanResponse       `json:"plan"`
-	Wallet  *WalletSnapshotDTO `json:"wallet,omitempty"`
-	Message string             `json:"message"`
+	Plan            PlanResponse       `json:"plan"`
+	Wallet          *WalletSnapshotDTO `json:"wallet,omitempty"`
+	Message         string             `json:"message"`
+	CancellationFee int64              `json:"cancellation_fee"`
+	RefundedAmount  int64              `json:"refunded_amount"`
 }
 
 type WalletSnapshotDTO struct {

@@ -1,6 +1,7 @@
 package spendingplans
 
 import (
+	"log"
 	"strings"
 	"time"
 
@@ -532,7 +533,11 @@ func (s *PlanService) ConfirmPlan(userID string, planID string, req ConfirmPlanR
 func (s *PlanService) CancelPlan(userID string, planID string, req CancelPlanRequest) *response.APIResponse {
 	planID = strings.TrimSpace(planID)
 
+	log.Printf("[CancelPlan] started user_id=%s plan_id=%s", userID, planID)
+
 	if planID == "" {
+		log.Printf("[CancelPlan] failed: empty plan_id user_id=%s", userID)
+
 		return &response.APIResponse{
 			Success: false,
 			Message: "Plan ID is required",
@@ -542,32 +547,241 @@ func (s *PlanService) CancelPlan(userID string, planID string, req CancelPlanReq
 
 	reason := strings.TrimSpace(req.Reason)
 
+	if reason == "" {
+		log.Printf("[CancelPlan] failed: empty reason user_id=%s plan_id=%s", userID, planID)
+
+		return &response.APIResponse{
+			Success: false,
+			Message: "Cancellation reason is required",
+			Error: map[string]string{
+				"reason": "Reason is required",
+			},
+		}
+	}
+
 	var cancelledPlan *SpendingPlan
+	var cancelledWallet *wallets.Wallet
+	var cancellationFee int64
+	var refundedAmount int64
+
+	isDraftCancellation := false
+	isFlexibleCancellation := false
+	isLockedCancellationBlocked := false
 
 	err := s.repository.WithTransaction(func(tx *gorm.DB) error {
+		log.Printf("[CancelPlan] transaction started user_id=%s plan_id=%s", userID, planID)
+
 		plan, err := s.repository.FindByIDAndUserIDForUpdate(tx, planID, userID)
 		if err != nil {
+			log.Printf("[CancelPlan] failed to fetch plan user_id=%s plan_id=%s error=%v", userID, planID, err)
 			return err
 		}
 
 		if plan == nil {
+			log.Printf("[CancelPlan] plan not found user_id=%s plan_id=%s", userID, planID)
 			return ErrPlanNotFound
 		}
 
-		if plan.Status == PlanStatusCompleted || plan.Status == PlanStatusCancelled || plan.Status == PlanStatusExpired {
+		log.Printf(
+			"[CancelPlan] plan found user_id=%s plan_id=%s status=%s funding_status=%s policy=%s amount=%d wallet_id=%s",
+			userID,
+			plan.ID,
+			plan.Status,
+			plan.FundingStatus,
+			plan.UnboxedBalancePolicy,
+			plan.Amount,
+			plan.WalletID,
+		)
+
+		if plan.Status == PlanStatusCompleted ||
+			plan.Status == PlanStatusCancelled ||
+			plan.Status == PlanStatusExpired {
+			log.Printf("[CancelPlan] blocked final plan user_id=%s plan_id=%s status=%s", userID, plan.ID, plan.Status)
 			return ErrPlanAlreadyFinal
 		}
 
-		err = s.repository.MarkAsCancelled(tx, plan, reason)
-		if err != nil {
-			return err
+		if plan.Status == PlanStatusDraft {
+			log.Printf("[CancelPlan] cancelling draft plan user_id=%s plan_id=%s", userID, plan.ID)
+
+			err = s.repository.MarkAsCancelled(tx, plan, reason)
+			if err != nil {
+				log.Printf("[CancelPlan] failed to mark draft plan cancelled user_id=%s plan_id=%s error=%v", userID, plan.ID, err)
+				return err
+			}
+
+			isDraftCancellation = true
+			cancelledPlan = plan
+
+			log.Printf("[CancelPlan] draft plan cancelled user_id=%s plan_id=%s", userID, plan.ID)
+
+			return nil
 		}
 
-		cancelledPlan = plan
-		return nil
+		if plan.Status == PlanStatusActive &&
+			plan.UnboxedBalancePolicy == PlanUnboxedPolicyLockedUntilPlanEnds {
+			isLockedCancellationBlocked = true
+
+			log.Printf("[CancelPlan] blocked locked plan user_id=%s plan_id=%s policy=%s", userID, plan.ID, plan.UnboxedBalancePolicy)
+
+			return ErrPlanLockedCannotCancel
+		}
+
+		if plan.Status == PlanStatusActive &&
+			plan.UnboxedBalancePolicy == PlanUnboxedPolicyFlexible {
+			log.Printf("[CancelPlan] flexible active plan cancellation started user_id=%s plan_id=%s", userID, plan.ID)
+
+			if plan.FundingStatus != PlanFundingStatusLocked {
+				log.Printf(
+					"[CancelPlan] blocked unfunded plan user_id=%s plan_id=%s funding_status=%s",
+					userID,
+					plan.ID,
+					plan.FundingStatus,
+				)
+
+				return ErrPlanNotFunded
+			}
+
+			cancellationFee = calculatePlanCancellationFee(plan.Amount)
+			refundedAmount = plan.Amount - cancellationFee
+			isFlexibleCancellation = true
+
+			log.Printf(
+				"[CancelPlan] fee calculated user_id=%s plan_id=%s amount=%d cancellation_fee=%d refunded_amount=%d",
+				userID,
+				plan.ID,
+				plan.Amount,
+				cancellationFee,
+				refundedAmount,
+			)
+
+			wallet, balanceBefore, balanceAfter, ledgerBefore, ledgerAfter, err := s.walletRepo.CancelFlexiblePlanTx(
+				tx,
+				userID,
+				plan.WalletID,
+				plan.Amount,
+				cancellationFee,
+			)
+			if err != nil {
+				log.Printf("[CancelPlan] wallet cancellation failed user_id=%s plan_id=%s wallet_id=%s error=%v", userID, plan.ID, plan.WalletID, err)
+				return err
+			}
+
+			log.Printf(
+				"[CancelPlan] wallet updated user_id=%s plan_id=%s wallet_id=%s available_before=%d available_after=%d ledger_before=%d ledger_after=%d locked_balance=%d",
+				userID,
+				plan.ID,
+				wallet.ID,
+				balanceBefore,
+				balanceAfter,
+				ledgerBefore,
+				ledgerAfter,
+				wallet.LockedBalance,
+			)
+
+			unlockLedger := &wallets.WalletLedger{
+				ID:            security.GenateUniqueID(),
+				UserID:        userID,
+				WalletID:      plan.WalletID,
+				Currency:      wallet.Currency,
+				Reference:     "LEDGER_PLAN_CANCEL_UNLOCK_" + plan.ID,
+				Type:          wallets.WalletLedgerTypeUnlock,
+				Source:        wallets.WalletLedgerSourceSpendingPlan,
+				SourceID:      plan.ID,
+				Amount:        refundedAmount,
+				BalanceBefore: balanceBefore,
+				BalanceAfter:  balanceAfter,
+				Description:   "Refunded funds from cancelled flexible spending plan: " + plan.Name,
+			}
+
+			_, err = s.walletRepo.CreateWalletLedgerTx(tx, unlockLedger)
+			if err != nil {
+				log.Printf("[CancelPlan] failed to create unlock ledger user_id=%s plan_id=%s error=%v", userID, plan.ID, err)
+				return err
+			}
+
+			log.Printf(
+				"[CancelPlan] unlock ledger created user_id=%s plan_id=%s ledger_ref=%s amount=%d",
+				userID,
+				plan.ID,
+				unlockLedger.Reference,
+				unlockLedger.Amount,
+			)
+
+			if cancellationFee > 0 {
+				feeLedger := &wallets.WalletLedger{
+					ID:            security.GenateUniqueID(),
+					UserID:        userID,
+					WalletID:      plan.WalletID,
+					Currency:      wallet.Currency,
+					Reference:     "LEDGER_PLAN_CANCEL_FEE_" + plan.ID,
+					Type:          wallets.WalletLedgerTypeDebit,
+					Source:        wallets.WalletLedgerSourcePlanCancellationFee,
+					SourceID:      plan.ID,
+					Amount:        cancellationFee,
+					BalanceBefore: ledgerBefore,
+					BalanceAfter:  ledgerAfter,
+					Description:   "Early cancellation fee for flexible spending plan: " + plan.Name,
+				}
+
+				_, err = s.walletRepo.CreateWalletLedgerTx(tx, feeLedger)
+				if err != nil {
+					log.Printf("[CancelPlan] failed to create fee ledger user_id=%s plan_id=%s error=%v", userID, plan.ID, err)
+					return err
+				}
+
+				log.Printf(
+					"[CancelPlan] fee ledger created user_id=%s plan_id=%s ledger_ref=%s amount=%d",
+					userID,
+					plan.ID,
+					feeLedger.Reference,
+					feeLedger.Amount,
+				)
+			}
+
+			now := time.Now()
+
+			plan.Status = PlanStatusCancelled
+			plan.FundingStatus = PlanFundingStatusReleased
+			plan.CancelledAt = &now
+			plan.CancelReason = reason
+
+			err = s.repository.UpdateWithTx(tx, plan)
+			if err != nil {
+				log.Printf("[CancelPlan] failed to update plan status user_id=%s plan_id=%s error=%v", userID, plan.ID, err)
+				return err
+			}
+
+			cancelledPlan = plan
+			cancelledWallet = wallet
+
+			log.Printf("[CancelPlan] flexible plan cancelled user_id=%s plan_id=%s", userID, plan.ID)
+
+			return nil
+		}
+
+		log.Printf(
+			"[CancelPlan] unsupported cancellation state user_id=%s plan_id=%s status=%s policy=%s funding_status=%s",
+			userID,
+			plan.ID,
+			plan.Status,
+			plan.UnboxedBalancePolicy,
+			plan.FundingStatus,
+		)
+
+		return ErrPlanCannotCancel
 	})
 
 	if err != nil {
+		log.Printf(
+			"[CancelPlan] failed user_id=%s plan_id=%s is_draft=%t is_flexible=%t is_locked_blocked=%t error=%v",
+			userID,
+			planID,
+			isDraftCancellation,
+			isFlexibleCancellation,
+			isLockedCancellationBlocked,
+			err,
+		)
+
 		if err == ErrPlanNotFound {
 			return &response.APIResponse{
 				Success: false,
@@ -584,6 +798,22 @@ func (s *PlanService) CancelPlan(userID string, planID string, req CancelPlanReq
 			}
 		}
 
+		if err == ErrPlanLockedCannotCancel {
+			return &response.APIResponse{
+				Success: false,
+				Message: "This plan is locked and cannot be cancelled early",
+				Error:   err,
+			}
+		}
+
+		if err == ErrPlanNotFunded {
+			return &response.APIResponse{
+				Success: false,
+				Message: "This plan has not been funded",
+				Error:   err,
+			}
+		}
+
 		return &response.APIResponse{
 			Success: false,
 			Message: "Could not cancel spending plan",
@@ -591,13 +821,47 @@ func (s *PlanService) CancelPlan(userID string, planID string, req CancelPlanReq
 		}
 	}
 
+	var walletSnapshot *WalletSnapshotDTO
+
+	if cancelledWallet != nil {
+		walletSnapshot = &WalletSnapshotDTO{
+			WalletID:         cancelledWallet.ID,
+			AvailableBalance: cancelledWallet.AvailableBalance,
+			LockedBalance:    cancelledWallet.LockedBalance,
+			LedgerBalance:    cancelledWallet.LedgerBalance,
+			Currency:         cancelledWallet.Currency,
+		}
+	}
+
+	log.Printf(
+		"[CancelPlan] successful user_id=%s plan_id=%s is_draft=%t is_flexible=%t cancellation_fee=%d refunded_amount=%d",
+		userID,
+		planID,
+		isDraftCancellation,
+		isFlexibleCancellation,
+		cancellationFee,
+		refundedAmount,
+	)
+
 	return &response.APIResponse{
 		Success: true,
 		Message: "Spending plan cancelled successfully",
 		Data: CancelPlanResponse{
-			Plan:    mapPlanToResponse(cancelledPlan, 0),
-			Wallet:  nil,
-			Message: "Plan cancelled successfully",
+			Plan:            mapPlanToResponse(cancelledPlan, 0),
+			Wallet:          walletSnapshot,
+			Message:         "Plan cancelled successfully",
+			CancellationFee: cancellationFee,
+			RefundedAmount:  refundedAmount,
 		},
 	}
+}
+
+func calculatePlanCancellationFee(amount int64) int64 {
+	fee := (amount * PlanCancellationFeePercent) / 100
+
+	if fee > PlanCancellationFeeCap {
+		return PlanCancellationFeeCap
+	}
+
+	return fee
 }

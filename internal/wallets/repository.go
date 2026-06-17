@@ -198,3 +198,57 @@ func (repo *WalletRepository) CreateWalletLedgerTx(tx *gorm.DB, data *WalletLedg
 	}
 	return data, nil
 }
+
+func (repo *WalletRepository) CancelFlexiblePlanTx(
+	tx *gorm.DB,
+	userID string,
+	walletID string,
+	planAmount int64,
+	cancellationFee int64,
+) (*Wallet, int64, int64, int64, int64, error) {
+	var wallet Wallet
+
+	err := tx.
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ? AND user_id = ?", walletID, userID).
+		First(&wallet).Error
+
+	if err != nil {
+		return nil, 0, 0, 0, 0, err
+	}
+
+	if planAmount <= 0 {
+		return nil, 0, 0, 0, 0, ErrInvalidWalletAmount
+	}
+
+	if cancellationFee < 0 {
+		return nil, 0, 0, 0, 0, ErrInvalidWalletAmount
+	}
+
+	if cancellationFee > planAmount {
+		return nil, 0, 0, 0, 0, ErrInvalidWalletAmount
+	}
+
+	if wallet.LockedBalance < planAmount {
+		return nil, 0, 0, 0, 0, ErrInsufficientLockedBalance
+	}
+
+	refundableAmount := planAmount - cancellationFee
+
+	balanceBefore := wallet.AvailableBalance
+	ledgerBefore := wallet.LedgerBalance
+
+	wallet.LockedBalance -= planAmount
+	wallet.AvailableBalance += refundableAmount
+	wallet.LedgerBalance -= cancellationFee
+
+	balanceAfter := wallet.AvailableBalance
+	ledgerAfter := wallet.LedgerBalance
+
+	err = tx.Save(&wallet).Error
+	if err != nil {
+		return nil, 0, 0, 0, 0, err
+	}
+
+	return &wallet, balanceBefore, balanceAfter, ledgerBefore, ledgerAfter, nil
+}

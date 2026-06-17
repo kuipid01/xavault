@@ -4,6 +4,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/kuipid01/salary-vault/internal/auth"
 	"github.com/kuipid01/salary-vault/internal/config"
+	"github.com/kuipid01/salary-vault/internal/envelope"
 	"github.com/kuipid01/salary-vault/internal/shared/response"
 	spendingplans "github.com/kuipid01/salary-vault/internal/spending_plans"
 	"github.com/kuipid01/salary-vault/internal/wallets"
@@ -26,6 +27,7 @@ func RegisterRoutes(app *fiber.App, cfg *config.Config, container *Container) {
 	wallets.RegisterWalletRoutes(v1, container.Wallets.Hnd)
 	webhooks.RegisterWebhooksRoutes(v1, container.WebhookHND)
 	spendingplans.RegisterPlanRoutes(v1, container.PlansHND)
+	envelope.RegisterEnvelopeRoutes(v1, container.EnvelopHND)
 	v1.Get("/", func(c *fiber.Ctx) error {
 
 		return response.Success(c, fiber.StatusOK, "Salary Vault API V1", nil)
