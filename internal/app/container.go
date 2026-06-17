@@ -9,15 +9,17 @@ import (
 	spendingplans "github.com/kuipid01/salary-vault/internal/spending_plans"
 	"github.com/kuipid01/salary-vault/internal/wallets"
 	"github.com/kuipid01/salary-vault/internal/webhooks"
+	"github.com/kuipid01/salary-vault/internal/withdrawals"
 	"gorm.io/gorm"
 )
 
 type Container struct {
-	Auth       *auth.Module
-	Wallets    *wallets.WalletModule
-	WebhookHND *webhooks.WebhookHandler
-	PlansHND   *spendingplans.PlanHandler
-	EnvelopHND *envelope.EnvelopeHandler
+	Auth             *auth.Module
+	Wallets          *wallets.WalletModule
+	WebhookHND       *webhooks.WebhookHandler
+	PlansHND         *spendingplans.PlanHandler
+	EnvelopHND       *envelope.EnvelopeHandler
+	WithdrawalModule *withdrawals.WithdrawalModule
 }
 
 func NewContainer(db *gorm.DB, cfg *config.Config) *Container {
@@ -44,13 +46,15 @@ func NewContainer(db *gorm.DB, cfg *config.Config) *Container {
 
 	envelopeHandler := envelope.NewEnvelopeHandler(envelopeService)
 
+	withdrawaModule := withdrawals.NewWithdrawalModule(db, idempotencyManager, planRepo, envelopeRepo, walletModule.Repo)
 	mailer := mail.NewBrevoMailer()
 
 	return &Container{
-		Auth:       auth.NewModule(db, walletModule.Svc, mailer),
-		Wallets:    walletModule,
-		WebhookHND: webhooks.NewWebhookHandler(walletModule.Svc),
-		PlansHND:   planHandler,
-		EnvelopHND: envelopeHandler,
+		Auth:             auth.NewModule(db, walletModule.Svc, mailer),
+		Wallets:          walletModule,
+		WebhookHND:       webhooks.NewWebhookHandler(walletModule.Svc),
+		PlansHND:         planHandler,
+		EnvelopHND:       envelopeHandler,
+		WithdrawalModule: withdrawaModule,
 	}
 }

@@ -252,3 +252,43 @@ func (repo *WalletRepository) CancelFlexiblePlanTx(
 
 	return &wallet, balanceBefore, balanceAfter, ledgerBefore, ledgerAfter, nil
 }
+
+func (repo *WalletRepository) DebitLockedFundsForWithdrawalTx(
+	tx *gorm.DB,
+	userID string,
+	walletID string,
+	amount int64,
+) (*Wallet, int64, int64, error) {
+	var wallet Wallet
+
+	err := tx.
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ? AND user_id = ?", walletID, userID).
+		First(&wallet).Error
+
+	if err != nil {
+		return nil, 0, 0, err
+	}
+
+	if amount <= 0 {
+		return nil, 0, 0, ErrInvalidWalletAmount
+	}
+
+	if wallet.LockedBalance < amount {
+		return nil, 0, 0, ErrInsufficientLockedBalance
+	}
+
+	balanceBefore := wallet.LedgerBalance
+
+	wallet.LockedBalance -= amount
+	wallet.LedgerBalance -= amount
+
+	balanceAfter := wallet.LedgerBalance
+
+	err = tx.Save(&wallet).Error
+	if err != nil {
+		return nil, 0, 0, err
+	}
+
+	return &wallet, balanceBefore, balanceAfter, nil
+}

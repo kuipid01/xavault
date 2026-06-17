@@ -9,6 +9,7 @@ import (
 	spendingplans "github.com/kuipid01/salary-vault/internal/spending_plans"
 	"github.com/kuipid01/salary-vault/internal/wallets"
 	"github.com/kuipid01/salary-vault/internal/webhooks"
+	"github.com/kuipid01/salary-vault/internal/withdrawals"
 )
 
 type handlers struct {
@@ -28,6 +29,7 @@ func RegisterRoutes(app *fiber.App, cfg *config.Config, container *Container) {
 	webhooks.RegisterWebhooksRoutes(v1, container.WebhookHND)
 	spendingplans.RegisterPlanRoutes(v1, container.PlansHND)
 	envelope.RegisterEnvelopeRoutes(v1, container.EnvelopHND)
+	withdrawals.NewWithdrawalRoute(v1, container.WithdrawalModule.Hnd)
 	v1.Get("/", func(c *fiber.Ctx) error {
 
 		return response.Success(c, fiber.StatusOK, "Salary Vault API V1", nil)

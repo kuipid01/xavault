@@ -8,4 +8,5 @@ const (
 	WalletLedgerTypeCancel                = "cancel"
 	WalletLedgerSourceSpendingPlan        = "spending_plan"
 	WalletLedgerSourcePlanCancellationFee = "plan_cancellation_fee"
+	WalletLedgerSourceWithdrawal          = "withdrawal"
 )
