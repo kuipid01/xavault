@@ -395,7 +395,7 @@ func (s *WithdrawalService) calculatePlanUnboxedWithdrawable(
 	// Plan unboxed balance is the part of the plan not assigned to top-level envelopes.
 	// Previous plan-level withdrawals must also be removed from that balance.
 
-	topLevelAllocated, err := s.envelopeRepo.SumTopLevelEnvelopeAmountTx(tx, planID)
+	topLevelAllocated, err := s.envelopeRepo.SumTopLevelEnvelopeAmount(planID)
 	if err != nil {
 		return 0, err
 	}

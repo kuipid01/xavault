@@ -84,10 +84,18 @@ func (repo *EnvelopeRepo) FindByPlanIDAndUserID(planID string, userID string) ([
 	return envelopes, nil
 }
 
+func (repo *EnvelopeRepo) dbOrTx(tx *gorm.DB) *gorm.DB {
+	if tx != nil {
+		return tx
+	}
+
+	return repo.db
+}
+
 func (repo *EnvelopeRepo) SumTopLevelEnvelopeAmountTx(tx *gorm.DB, planID string) (int64, error) {
 	var total int64
 
-	err := tx.
+	err := repo.dbOrTx(tx).
 		Model(&Envelope{}).
 		Where("plan_id = ? AND parent_envelope_id IS NULL", planID).
 		Select("COALESCE(SUM(amount), 0)").
@@ -95,9 +103,11 @@ func (repo *EnvelopeRepo) SumTopLevelEnvelopeAmountTx(tx *gorm.DB, planID string
 
 	return total, err
 }
+
 func (repo *EnvelopeRepo) SumTopLevelEnvelopeAmount(planID string) (int64, error) {
-	return repo.SumTopLevelEnvelopeAmountTx(repo.db, planID)
+	return repo.SumTopLevelEnvelopeAmountTx(nil, planID)
 }
+
 func (repo *EnvelopeRepo) SumTopLevelEnvelopeAmountExcludingTx(
 	tx *gorm.DB,
 	planID string,
