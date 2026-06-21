@@ -1,7 +1,9 @@
 package withdrawals
 
 import (
+	"encoding/json"
 	"errors"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -146,4 +148,94 @@ func (r *WithdrawalRepository) UpdateWithTx(tx *gorm.DB, withdrawal *Withdrawal)
 	}
 
 	return tx.Save(withdrawal).Error
+}
+
+func (r *WithdrawalRepository) HasPendingWithdrawalForSourceTx(
+	tx *gorm.DB,
+	userID string,
+	planID string,
+	sourceType string,
+	envelopeID *string,
+) (bool, error) {
+	if tx == nil {
+		return false, errors.New("transaction is required")
+	}
+
+	var count int64
+
+	query := tx.Model(&Withdrawal{}).
+		Where("user_id = ? AND plan_id = ? AND source_type = ? AND status IN ?",
+			userID,
+			planID,
+			sourceType,
+			[]string{
+				WithdrawalStatusPending,
+				WithdrawalStatusProcessing,
+			},
+		)
+
+	if envelopeID == nil || *envelopeID == "" {
+		query = query.Where("envelope_id IS NULL")
+	} else {
+		query = query.Where("envelope_id = ?", *envelopeID)
+	}
+
+	err := query.Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+
+	return count > 0, nil
+}
+
+func (r *WithdrawalRepository) MarkTransferInitiatedWithTx(
+	tx *gorm.DB,
+	withdrawalID string,
+	providerReference string,
+	providerTransferCode string,
+	providerStatus string,
+	rawProviderResponse interface{},
+) error {
+	if tx == nil {
+		return errors.New("transaction is required")
+	}
+
+	now := time.Now()
+
+	rawJSON := ""
+	if rawProviderResponse != nil {
+		b, err := json.Marshal(rawProviderResponse)
+		if err == nil {
+			rawJSON = string(b)
+		}
+	}
+
+	return tx.Model(&Withdrawal{}).
+		Where("id = ?", withdrawalID).
+		Updates(map[string]interface{}{
+			"status":                 WithdrawalStatusProcessing,
+			"provider_status":        providerStatus,
+			"provider_reference":     providerReference,
+			"provider_transfer_code": providerTransferCode,
+			"provider_response_json": rawJSON,
+			"transfer_initiated_at":  &now,
+		}).Error
+}
+
+func (r *WithdrawalRepository) MarkFailedWithTx(
+	tx *gorm.DB,
+	withdrawalID string,
+	reason string,
+) error {
+	if tx == nil {
+		return errors.New("transaction is required")
+	}
+
+	return tx.Model(&Withdrawal{}).
+		Where("id = ?", withdrawalID).
+		Updates(map[string]interface{}{
+			"status":          WithdrawalStatusFailed,
+			"provider_status": "failed",
+			"failure_reason":  reason,
+		}).Error
 }

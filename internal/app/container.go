@@ -1,10 +1,13 @@
 package app
 
 import (
+	"time"
+
 	"github.com/kuipid01/salary-vault/internal/auth"
 	"github.com/kuipid01/salary-vault/internal/config"
 	"github.com/kuipid01/salary-vault/internal/envelope"
 	"github.com/kuipid01/salary-vault/internal/platform/mail"
+	clientNetwork "github.com/kuipid01/salary-vault/internal/shared/client"
 	client "github.com/kuipid01/salary-vault/internal/shared/client/idempotence"
 	spendingplans "github.com/kuipid01/salary-vault/internal/spending_plans"
 	"github.com/kuipid01/salary-vault/internal/wallets"
@@ -23,10 +26,11 @@ type Container struct {
 }
 
 func NewContainer(db *gorm.DB, cfg *config.Config) *Container {
+	reusableClient := clientNetwork.NewReusableClient(time.Second * 15)
 	idempotencyRepo := client.NewIdempotentRepository(db)
 	idempotencyManager := client.NewIdempotentRequest(idempotencyRepo, true)
 
-	walletModule := wallets.NewWalletModule(db, idempotencyManager)
+	walletModule := wallets.NewWalletModule(db, idempotencyManager, reusableClient)
 
 	planRepo := spendingplans.NewPlanRepository(db)
 	envelopeRepo := envelope.NewEnvelopeRepo(db)
@@ -46,7 +50,7 @@ func NewContainer(db *gorm.DB, cfg *config.Config) *Container {
 
 	envelopeHandler := envelope.NewEnvelopeHandler(envelopeService)
 
-	withdrawaModule := withdrawals.NewWithdrawalModule(db, idempotencyManager, planRepo, envelopeRepo, walletModule.Repo)
+	withdrawaModule := withdrawals.NewWithdrawalModule(db, idempotencyManager, planRepo, envelopeRepo, walletModule.Repo, reusableClient)
 	mailer := mail.NewBrevoMailer()
 
 	return &Container{

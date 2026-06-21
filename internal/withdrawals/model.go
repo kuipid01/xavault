@@ -15,6 +15,11 @@ const (
 
 	WithdrawalSourcePlanUnboxed = "plan_unboxed"
 	WithdrawalSourceEnvelope    = "envelope"
+
+	WithdrawalStatusProcessing = "processing"
+	WithdrawalStatusSuccess    = "success"
+
+	WithdrawalStatusRejected = "rejected"
 )
 
 type Withdrawal struct {
@@ -43,6 +48,20 @@ type Withdrawal struct {
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+
+	RequestedAt         *time.Time
+	TransferInitiatedAt *time.Time
+
+	Provider             string
+	ProviderStatus       string
+	ProviderReference    string
+	ProviderTransferCode string
+	ProviderResponseJSON string
+
+	RecipientCode  string
+	IdempotencyKey string
+
+	FailureReason string
 }
 
 func (w *Withdrawal) BeforeCreate(tx *gorm.DB) error {

@@ -14,4 +14,5 @@ var (
 	ErrEnvelopeNotFound                = errors.New("envelope not found")
 	ErrWalletNotFound                  = errors.New("wallet not found")
 	ErrSpendingPlanLockedUntilPlanEnds = errors.New("spending plan is locked until the plan ends")
+	ErrPendingWithdrawalExists         = errors.New("pending withdrawal already exists")
 )

@@ -1,8 +1,6 @@
 package wallets
 
 import (
-	"time"
-
 	paymentproviders "github.com/kuipid01/salary-vault/internal/platform/payment-providers"
 	client "github.com/kuipid01/salary-vault/internal/shared/client"
 	idempotenceClient "github.com/kuipid01/salary-vault/internal/shared/client/idempotence"
@@ -15,9 +13,9 @@ type WalletModule struct {
 	Hnd  *WalletHandler
 }
 
-func NewWalletModule(db *gorm.DB, idempotencyManager *idempotenceClient.IdempotentRequest) *WalletModule {
+func NewWalletModule(db *gorm.DB, idempotencyManager *idempotenceClient.IdempotentRequest, reusableClient *client.ReusableClient) *WalletModule {
 	repo := NewWalletRepository(db)
-	reusableClient := client.NewReusableClient(time.Second * 15)
+
 	paystack := paymentproviders.NewPaystackProvider(reusableClient)
 
 	svc := NewWalletService(repo, paystack, idempotencyManager)

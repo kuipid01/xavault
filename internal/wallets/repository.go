@@ -1,6 +1,8 @@
 package wallets
 
 import (
+	"errors"
+
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -291,4 +293,121 @@ func (repo *WalletRepository) DebitLockedFundsForWithdrawalTx(
 	}
 
 	return &wallet, balanceBefore, balanceAfter, nil
+}
+
+// Data flow:
+// 1. Lock wallet row with SELECT FOR UPDATE.
+// 2. Ensure available balance is enough.
+// 3. Move funds from available to locked.
+// 4. Save wallet in same transaction.
+func (r *WalletRepository) HoldFundsForWithdrawalTx(
+	tx *gorm.DB,
+	userID string,
+	walletID string,
+	amount int64,
+) (*Wallet, error) {
+	if tx == nil {
+		return nil, errors.New("transaction is required")
+	}
+
+	var wallet Wallet
+
+	err := tx.
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ? AND user_id = ?", walletID, userID).
+		First(&wallet).Error
+	if err != nil {
+		return nil, err
+	}
+
+	if wallet.AvailableBalance < amount {
+		return nil, ErrInsufficientWalletBalance
+	}
+
+	wallet.AvailableBalance -= amount
+	wallet.LockedBalance += amount
+
+	err = tx.Save(&wallet).Error
+	if err != nil {
+		return nil, err
+	}
+
+	return &wallet, nil
+}
+
+// Data flow:
+// 1. Lock wallet row.
+// 2. Move funds from locked back to available.
+// 3. Used when Paystack initiation fails or withdrawal is rejected.
+func (r *WalletRepository) ReleaseWithdrawalHoldTx(
+	tx *gorm.DB,
+	userID string,
+	walletID string,
+	amount int64,
+) (*Wallet, error) {
+	if tx == nil {
+		return nil, errors.New("transaction is required")
+	}
+
+	var wallet Wallet
+
+	err := tx.
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ? AND user_id = ?", walletID, userID).
+		First(&wallet).Error
+	if err != nil {
+		return nil, err
+	}
+
+	if wallet.LockedBalance < amount {
+		return nil, errors.New("locked balance is less than withdrawal amount")
+	}
+
+	wallet.LockedBalance -= amount
+	wallet.AvailableBalance += amount
+
+	err = tx.Save(&wallet).Error
+	if err != nil {
+		return nil, err
+	}
+
+	return &wallet, nil
+}
+
+// Data flow:
+// 1. Lock wallet row.
+// 2. Remove funds from locked balance permanently.
+// 3. Used only after Paystack webhook confirms successful transfer.
+func (r *WalletRepository) CompleteWithdrawalTx(
+	tx *gorm.DB,
+	userID string,
+	walletID string,
+	amount int64,
+) (*Wallet, error) {
+	if tx == nil {
+		return nil, errors.New("transaction is required")
+	}
+
+	var wallet Wallet
+
+	err := tx.
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ? AND user_id = ?", walletID, userID).
+		First(&wallet).Error
+	if err != nil {
+		return nil, err
+	}
+
+	if wallet.LockedBalance < amount {
+		return nil, errors.New("locked balance is less than withdrawal amount")
+	}
+
+	wallet.LockedBalance -= amount
+
+	err = tx.Save(&wallet).Error
+	if err != nil {
+		return nil, err
+	}
+
+	return &wallet, nil
 }

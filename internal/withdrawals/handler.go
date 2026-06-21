@@ -53,8 +53,10 @@ func (h *WithdrawalHandler) RequestWithdrawal(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return response.Error(c, fiber.StatusBadRequest, "Invalid request payload", err)
 	}
-
-	result := h.svc.RequestWithdrawal(userID, planID, req)
+	// 1. Get the request context from Fiber and pass it into the service
+	ctx := c.UserContext()
+	email := c.Locals("email").(string)
+	result := h.svc.RequestWithdrawal(ctx, userID, email, planID, req, req.IdempotencyKey)
 
 	if result.Error != nil {
 		return response.Error(c, getWithdrawalStatusCode(result.Error), result.Message, result.Error)

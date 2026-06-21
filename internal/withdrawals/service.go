@@ -1,10 +1,15 @@
 package withdrawals
 
 import (
+	"context"
+	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/kuipid01/salary-vault/internal/envelope"
+	paymentproviders "github.com/kuipid01/salary-vault/internal/platform/payment-providers"
+	client "github.com/kuipid01/salary-vault/internal/shared/client/idempotence"
 	"github.com/kuipid01/salary-vault/internal/shared/response"
 	"github.com/kuipid01/salary-vault/internal/shared/security"
 	spendingplans "github.com/kuipid01/salary-vault/internal/spending_plans"
@@ -13,10 +18,12 @@ import (
 )
 
 type WithdrawalService struct {
-	repo         *WithdrawalRepository
-	planRepo     *spendingplans.PlanRepository
-	envelopeRepo *envelope.EnvelopeRepo
-	walletRepo   *wallets.WalletRepository
+	repo               *WithdrawalRepository
+	planRepo           *spendingplans.PlanRepository
+	envelopeRepo       *envelope.EnvelopeRepo
+	walletRepo         *wallets.WalletRepository
+	payment            paymentproviders.PaymentProvider
+	idempotencyManager *client.IdempotentRequest
 }
 
 func NewWithdrawalService(
@@ -24,12 +31,16 @@ func NewWithdrawalService(
 	planRepo *spendingplans.PlanRepository,
 	envelopeRepo *envelope.EnvelopeRepo,
 	walletRepo *wallets.WalletRepository,
+	payment paymentproviders.PaymentProvider,
+	idempotencyManager *client.IdempotentRequest,
 ) *WithdrawalService {
 	return &WithdrawalService{
-		repo:         repo,
-		planRepo:     planRepo,
-		envelopeRepo: envelopeRepo,
-		walletRepo:   walletRepo,
+		repo:               repo,
+		planRepo:           planRepo,
+		envelopeRepo:       envelopeRepo,
+		walletRepo:         walletRepo,
+		payment:            payment,
+		idempotencyManager: idempotencyManager,
 	}
 }
 
@@ -102,11 +113,15 @@ func (s *WithdrawalService) PreviewWithdrawal(
 }
 
 func (s *WithdrawalService) RequestWithdrawal(
+	ctx context.Context,
 	userID string,
+	email string, // keep this if your signature needs it, but Paystack transfer does not use it
 	planID string,
 	req RequestWithdrawalRequest,
+	idempotencyKey string,
 ) *response.APIResponse {
 	planID = strings.TrimSpace(planID)
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
 
 	if planID == "" {
 		return &response.APIResponse{
@@ -115,6 +130,18 @@ func (s *WithdrawalService) RequestWithdrawal(
 			Error:   "plan_id_required",
 		}
 	}
+
+	if idempotencyKey == "" {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Idempotency key is required",
+			Error:   "idempotency_key_required",
+		}
+	}
+
+	req.SourceType = strings.TrimSpace(req.SourceType)
+	req.Reason = strings.TrimSpace(req.Reason)
+	req.RecipientCode = strings.TrimSpace(req.RecipientCode)
 
 	validationErrors := validateRequestWithdrawalRequest(req)
 	if len(validationErrors) > 0 {
@@ -125,125 +152,325 @@ func (s *WithdrawalService) RequestWithdrawal(
 		}
 	}
 
-	var createdWithdrawal *Withdrawal
-	var updatedWallet *wallets.Wallet
-
-	err := s.repo.WithTransaction(func(tx *gorm.DB) error {
-		// Expected behaviour:
-		// We recalculate the preview inside the transaction.
-		// This prevents the user from previewing one amount, then withdrawing after balances changed.
-		preview, err := s.calculateWithdrawalPreviewTx(
-			tx,
-			userID,
-			planID,
-			req.SourceType,
-			req.EnvelopeID,
-			req.Amount,
-		)
-		if err != nil {
-			return err
+	if req.RecipientCode == "" {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Recipient code is required",
+			Error: map[string]string{
+				"recipient_code": "Recipient code is required for Paystack transfer",
+			},
 		}
+	}
 
-		if !preview.CanWithdraw {
-			return ErrInsufficientWithdrawable
-		}
+	// Data flow:
+	// 1. The idempotency manager wraps the whole withdrawal request.
+	// 2. This prevents duplicate local withdrawal records and duplicate Paystack transfer attempts.
+	// 3. If the same idempotency key is retried after success, the saved response is returned.
+	code, payload, err := s.idempotencyManager.HandleIdempotentRequest(
+		ctx,
+		idempotencyKey,
+		userID,
+		func() (int, interface{}, error) {
+			var createdWithdrawal *Withdrawal
+			var updatedWallet *wallets.Wallet
+			var planCurrency string
 
-		plan, err := s.planRepo.FindByIDAndUserIDForUpdate(tx, planID, userID)
-		if err != nil {
-			return err
-		}
+			now := time.Now()
 
-		if plan == nil {
-			return ErrPlanNotFound
-		}
+			withdrawalID := security.GenateUniqueID()
+			holdLedgerID := security.GenateUniqueID()
+			reference := "WITHDRAWAL_" + security.GenateUniqueID()
 
-		if plan.Status != spendingplans.PlanStatusActive {
-			return ErrPlanNotActive
-		}
+			// Data flow:
+			// 1. Start DB transaction.
+			// 2. Lock the spending plan row.
+			// 3. Validate plan status and policy.
+			// 4. Calculate withdrawable amount using locked DB state.
+			// 5. Move amount from wallet available balance to locked balance.
+			// 6. Create withdrawal record with pending status.
+			// 7. Create withdrawal hold ledger.
+			// 8. Commit transaction before calling Paystack.
+			err := s.repo.WithTransaction(func(tx *gorm.DB) error {
+				plan, err := s.planRepo.FindByIDAndUserIDForUpdate(tx, planID, userID)
+				if err != nil {
+					return err
+				}
 
-		now := time.Now()
+				if plan == nil {
+					return ErrPlanNotFound
+				}
 
-		withdrawal := &Withdrawal{
-			ID:          security.GenateUniqueID(),
-			UserID:      userID,
-			WalletID:    plan.WalletID,
-			PlanID:      plan.ID,
-			EnvelopeID:  normalizeOptionalString(req.EnvelopeID),
-			SourceType:  strings.TrimSpace(req.SourceType),
-			Status:      WithdrawalStatusPaid,
-			Amount:      req.Amount,
-			Currency:    plan.Currency,
-			Reason:      strings.TrimSpace(req.Reason),
-			Reference:   "WITHDRAWAL_" + security.GenateUniqueID(),
-			Description: buildWithdrawalDescription(req.SourceType, req.EnvelopeID),
-			PaidAt:      &now,
-		}
+				if plan.Status != spendingplans.PlanStatusActive {
+					return ErrPlanNotActive
+				}
 
-		err = s.repo.CreateWithTx(tx, withdrawal)
-		if err != nil {
-			return err
-		}
+				// Locked plans should only block withdrawal before the plan has ended.
+				// If your product rule is stricter, remove the date check.
+				if plan.UnboxedBalancePolicy == spendingplans.PlanUnboxedPolicyLockedUntilPlanEnds &&
+					now.Before(plan.EndDate) {
+					return ErrSpendingPlanLockedUntilPlanEnds
+				}
 
-		// Expected behaviour:
-		// A withdrawal removes money from locked balance.
-		// It also reduces ledger balance because money has left the wallet.
-		// Available balance should not increase here.
-		wallet, balanceBefore, balanceAfter, err := s.walletRepo.DebitLockedFundsForWithdrawalTx(
-			tx,
-			userID,
-			plan.WalletID,
-			req.Amount,
-		)
-		if err != nil {
-			return err
-		}
+				planCurrency = plan.Currency
 
-		ledger := &wallets.WalletLedger{
-			ID:            security.GenateUniqueID(),
-			UserID:        userID,
-			WalletID:      plan.WalletID,
-			Currency:      wallet.Currency,
-			Reference:     "LEDGER_WITHDRAWAL_" + withdrawal.ID,
-			Type:          wallets.WalletLedgerTypeDebit,
-			Source:        wallets.WalletLedgerSourceWithdrawal,
-			SourceID:      withdrawal.ID,
-			Amount:        req.Amount,
-			BalanceBefore: balanceBefore,
-			BalanceAfter:  balanceAfter,
-			Description:   "Withdrawal from spending plan",
-		}
+				// This preview must use locked rows internally, especially when source type is envelope.
+				preview, err := s.calculateWithdrawalPreviewTx(
+					tx,
+					userID,
+					planID,
+					req.SourceType,
+					req.EnvelopeID,
+					req.Amount,
+				)
+				if err != nil {
+					return err
+				}
 
-		_, err = s.walletRepo.CreateWalletLedgerTx(tx, ledger)
-		if err != nil {
-			return err
-		}
+				if !preview.CanWithdraw {
+					return ErrInsufficientWithdrawable
+				}
 
-		createdWithdrawal = withdrawal
-		updatedWallet = wallet
+				// Optional but recommended:
+				// Block duplicate pending withdrawal against the same plan/source/envelope.
+				exists, err := s.repo.HasPendingWithdrawalForSourceTx(
+					tx,
+					userID,
+					planID,
+					req.SourceType,
+					req.EnvelopeID,
+				)
+				if err != nil {
+					return err
+				}
 
-		return nil
-	})
+				if exists {
+					return ErrPendingWithdrawalExists
+				}
+
+				// Critical money movement:
+				// This must lock the wallet row and move:
+				// available_balance -= req.Amount
+				// locked_balance += req.Amount
+				updatedWallet, err = s.walletRepo.HoldFundsForWithdrawalTx(
+					tx,
+					userID,
+					plan.WalletID,
+					req.Amount,
+				)
+				if err != nil {
+					return err
+				}
+
+				withdrawal := &Withdrawal{
+					ID:          withdrawalID,
+					UserID:      userID,
+					WalletID:    plan.WalletID,
+					PlanID:      plan.ID,
+					EnvelopeID:  normalizeOptionalString(req.EnvelopeID),
+					SourceType:  req.SourceType,
+					Status:      WithdrawalStatusPending,
+					Amount:      req.Amount,
+					Currency:    planCurrency,
+					Reason:      req.Reason,
+					Reference:   reference,
+					Description: buildWithdrawalDescription(req.SourceType, req.EnvelopeID),
+
+					PaidAt: nil,
+
+					Provider:            paymentproviders.Paystack,
+					ProviderStatus:      "local_pending",
+					RecipientCode:       req.RecipientCode,
+					IdempotencyKey:      idempotencyKey,
+					RequestedAt:         &now,
+					TransferInitiatedAt: nil,
+				}
+
+				if err := s.repo.CreateWithTx(tx, withdrawal); err != nil {
+					return err
+				}
+
+				createdWithdrawal = withdrawal
+
+				holdLedger := &wallets.WalletLedger{
+					ID:        holdLedgerID,
+					UserID:    userID,
+					WalletID:  plan.WalletID,
+					Currency:  plan.Currency,
+					Reference: reference,
+					Source:    wallets.WalletLedgerSourceWithdrawal,
+					SourceID:  withdrawal.ID,
+					Type:      wallets.WalletLedgerTypeWithdrawalHold,
+
+					Amount:    req.Amount,
+					CreatedAt: now,
+				}
+
+				_, err = s.walletRepo.CreateWalletLedgerTx(tx, holdLedger)
+				if err != nil {
+					return err
+				}
+
+				return nil
+			})
+
+			if err != nil {
+				return http.StatusBadRequest, nil, err
+			}
+
+			// Data flow:
+			// 1. Local DB now has a pending withdrawal and locked funds.
+			// 2. Now call Paystack.
+			// 3. Initiation does not mean success.
+			// 4. Save Paystack transfer_code/reference/status.
+			// 5. Webhook will later mark withdrawal as success or failed.
+			amountForPaystack := req.Amount
+
+			transferReason := req.Reason
+			if transferReason == "" {
+				transferReason = "Withdrawal from spending plan"
+			}
+
+			paystackReq := &paymentproviders.InitiateTransferBody{
+				Source:    "balance",
+				Amount:    amountForPaystack,
+				Recipient: req.RecipientCode,
+				Reason:    transferReason,
+				Reference: createdWithdrawal.Reference,
+			}
+
+			paystackResp, err := s.payment.InitiateTransfer(ctx, paystackReq)
+			if err != nil {
+				// Data flow:
+				// Paystack initiation failed.
+				// Reverse the local fund hold so user is not stuck.
+				reversalErr := s.reverseFailedWithdrawalHold(
+					createdWithdrawal.ID,
+					userID,
+					createdWithdrawal.WalletID,
+					createdWithdrawal.Amount,
+					createdWithdrawal.Currency,
+					createdWithdrawal.Reference,
+					fmt.Sprintf("Paystack transfer initiation failed: %v", err),
+				)
+				if reversalErr != nil {
+					return http.StatusInternalServerError, nil, fmt.Errorf(
+						"paystack failed: %w; reversal also failed: %v",
+						err,
+						reversalErr,
+					)
+				}
+
+				return http.StatusBadRequest, nil, err
+			}
+
+			// Data flow:
+			// Paystack accepted the transfer initiation.
+			// We now save provider data.
+			// Do not mark as paid here.
+			err = s.repo.WithTransaction(func(tx *gorm.DB) error {
+				return s.repo.MarkTransferInitiatedWithTx(
+					tx,
+					createdWithdrawal.ID,
+					paystackResp.Data.Reference,
+					paystackResp.Data.TransferCode,
+					paystackResp.Data.Status,
+					paystackResp.Data,
+				)
+			})
+			if err != nil {
+				// This is serious because Paystack may process the transfer but DB failed to save transfer code.
+				// Keep the idempotency as failed so the request can be investigated/retried carefully.
+				return http.StatusInternalServerError, nil, fmt.Errorf("failed to save Paystack transfer data: %w", err)
+			}
+
+			return http.StatusAccepted, map[string]interface{}{
+				"message":    "Withdrawal request submitted and transfer processing started",
+				"withdrawal": mapWithdrawalToResponse(createdWithdrawal),
+				"wallet": WalletSnapshotDTO{
+					WalletID:         updatedWallet.ID,
+					AvailableBalance: updatedWallet.AvailableBalance,
+					LockedBalance:    updatedWallet.LockedBalance,
+					LedgerBalance:    updatedWallet.LedgerBalance,
+					Currency:         updatedWallet.Currency,
+				},
+				"paystack": paystackResp.Data,
+				"note":     "Final withdrawal success will be confirmed by Paystack webhook",
+			}, nil
+		},
+	)
 
 	if err != nil {
 		return withdrawalErrorResponse("Could not request withdrawal", err)
 	}
 
+	if code >= 400 {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not request withdrawal",
+			Error:   payload,
+		}
+	}
+
 	return &response.APIResponse{
 		Success: true,
-		Message: "Withdrawal completed successfully",
-		Data: map[string]interface{}{
-			"withdrawal": mapWithdrawalToResponse(createdWithdrawal),
-			"wallet": WalletSnapshotDTO{
-				WalletID:         updatedWallet.ID,
-				AvailableBalance: updatedWallet.AvailableBalance,
-				LockedBalance:    updatedWallet.LockedBalance,
-				LedgerBalance:    updatedWallet.LedgerBalance,
-				Currency:         updatedWallet.Currency,
-			},
-		},
+		Message: "Withdrawal request submitted successfully",
+		Data:    payload,
 	}
 }
 
+func (s *WithdrawalService) reverseFailedWithdrawalHold(
+	withdrawalID string,
+	userID string,
+	walletID string,
+	amount int64,
+	currency string,
+	reference string,
+	reason string,
+) error {
+	now := time.Now()
+
+	return s.repo.WithTransaction(func(tx *gorm.DB) error {
+		// Data flow:
+		// 1. Paystack failed before final transfer processing.
+		// 2. Release locked withdrawal funds back to available balance.
+		// 3. Mark withdrawal as failed.
+		// 4. Write reversal ledger.
+		updatedWallet, err := s.walletRepo.ReleaseWithdrawalHoldTx(
+			tx,
+			userID,
+			walletID,
+			amount,
+		)
+		if err != nil {
+			return err
+		}
+
+		_ = updatedWallet
+
+		err = s.repo.MarkFailedWithTx(tx, withdrawalID, reason)
+		if err != nil {
+			return err
+		}
+
+		reversalLedger := &wallets.WalletLedger{
+			ID:        security.GenateUniqueID(),
+			UserID:    userID,
+			WalletID:  walletID,
+			Currency:  currency,
+			Reference: reference,
+
+			Source:   wallets.WalletLedgerSourceWithdrawal,
+			SourceID: withdrawalID,
+			Type:     wallets.WalletLedgerTypeWithdrawalReversal,
+
+			Amount:    amount,
+			CreatedAt: now,
+		}
+
+		_, err = s.walletRepo.CreateWalletLedgerTx(tx, reversalLedger)
+		return err
+	})
+}
 func (s *WithdrawalService) GetPlanWithdrawals(
 	userID string,
 	planID string,
