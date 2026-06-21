@@ -10,6 +10,7 @@ import (
 	clientNetwork "github.com/kuipid01/salary-vault/internal/shared/client"
 	client "github.com/kuipid01/salary-vault/internal/shared/client/idempotence"
 	spendingplans "github.com/kuipid01/salary-vault/internal/spending_plans"
+	"github.com/kuipid01/salary-vault/internal/waitlist"
 	"github.com/kuipid01/salary-vault/internal/wallets"
 	"github.com/kuipid01/salary-vault/internal/webhooks"
 	"github.com/kuipid01/salary-vault/internal/withdrawals"
@@ -23,6 +24,7 @@ type Container struct {
 	PlansHND         *spendingplans.PlanHandler
 	EnvelopHND       *envelope.EnvelopeHandler
 	WithdrawalModule *withdrawals.WithdrawalModule
+	Waitlist         *waitlist.Module
 }
 
 func NewContainer(db *gorm.DB, cfg *config.Config) *Container {
@@ -60,5 +62,6 @@ func NewContainer(db *gorm.DB, cfg *config.Config) *Container {
 		PlansHND:         planHandler,
 		EnvelopHND:       envelopeHandler,
 		WithdrawalModule: withdrawaModule,
+		Waitlist:         waitlist.NewModule(db),
 	}
 }

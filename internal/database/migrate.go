@@ -7,6 +7,7 @@ import (
 	client "github.com/kuipid01/salary-vault/internal/shared/client/idempotence"
 	spendingplans "github.com/kuipid01/salary-vault/internal/spending_plans"
 	"github.com/kuipid01/salary-vault/internal/users"
+	"github.com/kuipid01/salary-vault/internal/waitlist"
 	"github.com/kuipid01/salary-vault/internal/wallets"
 	"github.com/kuipid01/salary-vault/internal/withdrawals"
 	"gorm.io/gorm"
@@ -23,6 +24,7 @@ func RunMigrations(db *gorm.DB) {
 		&spendingplans.SpendingPlan{},
 		&envelope.Envelope{},
 		&withdrawals.Withdrawal{},
+		&waitlist.Entry{},
 	)
 
 	if err != nil {
