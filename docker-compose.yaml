@@ -12,5 +12,23 @@ services:
     volumes:
       - salary_vault_pgdata:/var/lib/postgresql/data
 
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: salary_vault_api
+    restart: unless-stopped
+    environment:
+      DB_HOST: postgres
+      DB_USER: salary_vault
+      DB_PASSWORD: salary_vault_password
+      DB_NAME: salary_vault
+      DB_PORT: 5432
+      APP_PORT: 8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+
 volumes:
   salary_vault_pgdata:
