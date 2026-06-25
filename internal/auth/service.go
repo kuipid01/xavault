@@ -47,11 +47,28 @@ func (s *AuthService) Register(req RegisterRequest) *response.APIResponse {
 	}
 
 	if userExists != nil {
-		return &response.APIResponse{
-			Success: false,
-			Message: "Email already exists",
-			Error:   ErrEmailAlreadyExists,
+		if !userExists.MailVerified {
+			_, err = s.userVerificationFlow(userExists.Email, "register")
+			if err != nil {
+				return &response.APIResponse{
+					Success: false,
+					Message: "We could not reverify user",
+					Error:   err,
+				}
+			}
+			return &response.APIResponse{
+				Success: true,
+				Message: "Resent Verifcation link",
+				Data:    validData.Email,
+			}
+		} else {
+			return &response.APIResponse{
+				Success: false,
+				Message: "Email already exists",
+				Error:   ErrEmailAlreadyExists,
+			}
 		}
+
 	}
 	hashedPassword, err := hashPassword(validData.Password)
 	if err != nil {
