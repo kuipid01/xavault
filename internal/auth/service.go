@@ -409,9 +409,17 @@ func (s *AuthService) sendVerificationEmail(email, token string) error {
 	env := os.Getenv("APP_ENV")
 	var verifyURL string
 	if env == "production" {
-		verifyURL = fmt.Sprintf("%s/verify-email?token=%s", os.Getenv("APP_FRONTEND_URL"), token)
+		frontendURL := os.Getenv("APP_FRONTEND_URL")
+		if frontendURL == "" {
+			frontendURL = "https://xavault.kuipid.com"
+		}
+		verifyURL = fmt.Sprintf("%s/verify-email?token=%s", frontendURL, token)
 	} else {
-		verifyURL = fmt.Sprintf("%s/verify-email?token=%s", os.Getenv("APP_LOCAL_URL"), token)
+		localURL := os.Getenv("APP_LOCAL_URL")
+		if localURL == "" {
+			localURL = "http://localhost:3000"
+		}
+		verifyURL = fmt.Sprintf("%s/verify-email?token=%s", localURL, token)
 	}
 	fmt.Println(verifyURL)
 	err := s.mailer.SendMailVerification(email, verifyURL)
@@ -421,9 +429,17 @@ func (s *AuthService) sendForgetPasswordMail(email, token string) error {
 	env := os.Getenv("APP_ENV")
 	var resetPasswordURL string
 	if env == "production" {
-		resetPasswordURL = fmt.Sprintf("%s/reset-password?token=%s", os.Getenv("APP_FRONTEND_URL"), token)
+		frontendURL := os.Getenv("APP_FRONTEND_URL")
+		if frontendURL == "" {
+			frontendURL = "https://xavault.kuipid.com"
+		}
+		resetPasswordURL = fmt.Sprintf("%s/reset-password?token=%s", frontendURL, token)
 	} else {
-		resetPasswordURL = fmt.Sprintf("%s/reset-password?token=%s", os.Getenv("APP_LOCAL_URL"), token)
+		localURL := os.Getenv("APP_LOCAL_URL")
+		if localURL == "" {
+			localURL = "http://localhost:3000"
+		}
+		resetPasswordURL = fmt.Sprintf("%s/reset-password?token=%s", localURL, token)
 	}
 	fmt.Println(resetPasswordURL, "RESET PASSWORD URL")
 	err := s.mailer.SendForgetPasswordMail(email, resetPasswordURL)
