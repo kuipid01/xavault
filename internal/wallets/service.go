@@ -88,6 +88,7 @@ func (s *WalletService) CreateWallet(userId string) *response.APIResponse {
 
 func (s *WalletService) EnsureDedicatedAccount(ctx context.Context, userID string, email string) *response.APIResponse {
 	wallet, err := s.repo.GetWalletByOwnerID(userID)
+
 	if err != nil {
 		return &response.APIResponse{
 			Success: false,
@@ -111,6 +112,7 @@ func (s *WalletService) EnsureDedicatedAccount(ctx context.Context, userID strin
 			Email:     email,
 			FirstName: firstName,
 			LastName:  lastName,
+			Phone:     wallet.User.PhoneNumber,
 		})
 		if err != nil {
 			return &response.APIResponse{

@@ -26,13 +26,15 @@ func (repo *WalletRepository) Create(wallet *Wallet) (*Wallet, error) {
 func (repo *WalletRepository) GetWalletByOwnerID(ownerID string) (*Wallet, error) {
 	var wallet Wallet
 
-	if err := repo.db.Where("user_id = ?", ownerID).First(&wallet).Error; err != nil {
+	if err := repo.db.
+		Preload("User").
+		Where("user_id = ?", ownerID).
+		First(&wallet).Error; err != nil {
 		return nil, err
 	}
 
 	return &wallet, nil
 }
-
 func (repo *WalletRepository) GetWalletByDedicatedAccountNumber(accountNumber string) (*Wallet, error) {
 	var wallet Wallet
 
@@ -388,9 +390,9 @@ func (r *WalletRepository) CompleteWithdrawalTx(
 	userID string,
 	walletID string,
 	amount int64,
-) (*Wallet, error) {
+) (int64, *Wallet, error) {
 	if tx == nil {
-		return nil, errors.New("transaction is required")
+		return 0, nil, errors.New("transaction is required")
 	}
 
 	var wallet Wallet
@@ -400,19 +402,20 @@ func (r *WalletRepository) CompleteWithdrawalTx(
 		Where("id = ? AND user_id = ?", walletID, userID).
 		First(&wallet).Error
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 
 	if wallet.LockedBalance < amount {
-		return nil, errors.New("locked balance is less than withdrawal amount")
+		return 0, nil, errors.New("locked balance is less than withdrawal amount")
 	}
 
+	lockedBefore := wallet.LockedBalance
 	wallet.LockedBalance -= amount
 
 	err = tx.Save(&wallet).Error
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 
-	return &wallet, nil
+	return lockedBefore, &wallet, nil
 }

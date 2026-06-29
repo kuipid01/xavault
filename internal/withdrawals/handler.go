@@ -140,6 +140,12 @@ func getWithdrawalStatusCode(err interface{}) int {
 	case ErrInvalidWithdrawalDestination:
 		return fiber.StatusBadRequest
 
+	case ErrWithdrawalRequestInProgress:
+		return fiber.StatusConflict
+
+	case ErrWithdrawalAlreadyProcessing:
+		return fiber.StatusConflict
+
 	case ErrWithdrawalPinNotSet:
 		return fiber.StatusForbidden
 

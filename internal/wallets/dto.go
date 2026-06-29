@@ -8,4 +8,5 @@ type InitiateDepositRequest struct {
 const (
 	WalletLedgerTypeWithdrawalHold     = "withdrawal_hold"
 	WalletLedgerTypeWithdrawalReversal = "withdrawal_reversal"
+	WalletLedgerTypeWithdrawalDebit    = "withdrawal_debit"
 )

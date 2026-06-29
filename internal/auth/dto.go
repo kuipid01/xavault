@@ -4,10 +4,13 @@ type RegisterRequest struct {
 	Email           string `json:"email" validate:"required,email"`
 	Password        string `json:"password" validate:"required,min=6,max=128"`
 	ConfirmPassword string `json:"confirm_password" validate:"required,eqfield=Password"`
+	Country         string `json:"country" validate:"required"`
+	PhoneNumber     string `json:"phone_number" validate:"required"`
 }
 
 type ValidateMailRequest struct {
 	Token string `json:"token"`
+	OTP   string `json:"otp"`
 	Email string `json:"email"`
 }
 
@@ -23,7 +26,8 @@ type ForgetPasswordRequest struct {
 type ResetPasswordRequest struct {
 	Password        string `json:"password" validate:"required,min=6,max=128"`
 	ConfirmPassword string `json:"confirm_password" validate:"required,eqfield=Password"`
-	Token           string `json:"token" validate:"required"`
+	Token           string `json:"token"`
+	OTP             string `json:"otp"`
 }
 
 type RefreshTokenRequest struct {

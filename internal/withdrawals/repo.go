@@ -100,8 +100,9 @@ func (r *WithdrawalRepository) SumPaidEnvelopeWithdrawalsTx(
 	userID string,
 ) (int64, error) {
 	var total int64
+	db := r.dbOrTx(tx)
 
-	err := tx.
+	err := db.
 		Model(&Withdrawal{}).
 		Where(
 			"envelope_id = ? AND user_id = ? AND source_type = ? AND status = ?",
@@ -129,6 +130,28 @@ func (r *WithdrawalRepository) FindByIDForUpdate(
 	err := tx.
 		Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("id = ?", withdrawalID).
+		First(&withdrawal).Error
+
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return &withdrawal, nil
+}
+
+func (r *WithdrawalRepository) FindByReferenceForUpdate(
+	tx *gorm.DB,
+	reference string,
+) (*Withdrawal, error) {
+	var withdrawal Withdrawal
+
+	err := tx.
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("reference = ? OR provider_reference = ?", reference, reference).
 		First(&withdrawal).Error
 
 	if err != nil {
@@ -188,6 +211,49 @@ func (r *WithdrawalRepository) HasPendingWithdrawalForSourceTx(
 	return count > 0, nil
 }
 
+func (r *WithdrawalRepository) FindOpenWithdrawalForSourceTx(
+	tx *gorm.DB,
+	userID string,
+	planID string,
+	sourceType string,
+	envelopeID *string,
+) (*Withdrawal, error) {
+	if tx == nil {
+		return nil, errors.New("transaction is required")
+	}
+
+	var withdrawal Withdrawal
+
+	query := tx.
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("user_id = ? AND plan_id = ? AND source_type = ? AND status IN ?",
+			userID,
+			planID,
+			sourceType,
+			[]string{
+				WithdrawalStatusPending,
+				WithdrawalStatusProcessing,
+			},
+		)
+
+	if envelopeID == nil || *envelopeID == "" {
+		query = query.Where("envelope_id IS NULL")
+	} else {
+		query = query.Where("envelope_id = ?", *envelopeID)
+	}
+
+	err := query.Order("created_at DESC").First(&withdrawal).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return &withdrawal, nil
+}
+
 func (r *WithdrawalRepository) MarkTransferInitiatedWithTx(
 	tx *gorm.DB,
 	withdrawalID string,
@@ -237,5 +303,26 @@ func (r *WithdrawalRepository) MarkFailedWithTx(
 			"status":          WithdrawalStatusFailed,
 			"provider_status": "failed",
 			"failure_reason":  reason,
+			"failed_at":       time.Now(),
+		}).Error
+}
+
+func (r *WithdrawalRepository) MarkPaidWithTx(
+	tx *gorm.DB,
+	withdrawalID string,
+	providerStatus string,
+) error {
+	if tx == nil {
+		return errors.New("transaction is required")
+	}
+
+	now := time.Now()
+
+	return tx.Model(&Withdrawal{}).
+		Where("id = ?", withdrawalID).
+		Updates(map[string]interface{}{
+			"status":          WithdrawalStatusPaid,
+			"provider_status": providerStatus,
+			"paid_at":         &now,
 		}).Error
 }

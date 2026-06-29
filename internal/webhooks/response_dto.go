@@ -20,3 +20,11 @@ type ChargeSuccessData struct {
 		AccountNumber string `json:"account_number"`
 	} `json:"dedicated_account"`
 }
+
+type TransferEventData struct {
+	Reference    string `json:"reference"`
+	Status       string `json:"status"`
+	Reason       string `json:"reason"`
+	TransferCode string `json:"transfer_code"`
+	Amount       int64  `json:"amount"`
+}

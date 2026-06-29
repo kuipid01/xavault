@@ -3,9 +3,12 @@ package paymentproviders
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/kuipid01/salary-vault/internal/shared/client"
 )
@@ -97,6 +100,8 @@ func (p *PaystackProvider) ResolveBankAccount(
 	accountNumber string,
 	bankCode string,
 ) (*ResolveBankAccountResponse, error) {
+	start := time.Now()
+
 	headers := map[string]string{
 		"Authorization": "Bearer " + p.apiKey,
 	}
@@ -108,18 +113,67 @@ func (p *PaystackProvider) ResolveBankAccount(
 	params.Set("bank_code", bankCode)
 
 	requestURL := p.baseUrl + "/bank/resolve?" + params.Encode()
-	err := p.reusableClient.DoRequest(ctx, http.MethodGet, requestURL, headers, nil, &respTarget)
+
+	log.Printf(
+		"[PAYSTACK][RESOLVE_ACCOUNT][START] bank_code=%s account_number=%s url=%s",
+		bankCode,
+		maskAccountNumber(accountNumber),
+		requestURL,
+	)
+
+	err := p.reusableClient.DoRequest(
+		ctx,
+		http.MethodGet,
+		requestURL,
+		headers,
+		nil,
+		&respTarget,
+	)
+
+	duration := time.Since(start)
+
 	if err != nil {
-		return nil, err
+		log.Printf(
+			"[PAYSTACK][RESOLVE_ACCOUNT][ERROR] bank_code=%s account_number=%s duration=%s error=%v",
+			bankCode,
+			maskAccountNumber(accountNumber),
+			duration,
+			err,
+		)
+
+		return nil, fmt.Errorf("paystack resolve account request failed: %w", err)
 	}
 
+	log.Printf(
+		"[PAYSTACK][RESOLVE_ACCOUNT][RESPONSE] bank_code=%s account_number=%s duration=%s status=%v message=%q account_name=%q",
+		bankCode,
+		maskAccountNumber(accountNumber),
+		duration,
+		respTarget.Status,
+		respTarget.Message,
+		respTarget.Data.AccountName,
+	)
+
 	if !respTarget.Status {
+		log.Printf(
+			"[PAYSTACK][RESOLVE_ACCOUNT][FAILED] bank_code=%s account_number=%s message=%q",
+			bankCode,
+			maskAccountNumber(accountNumber),
+			respTarget.Message,
+		)
+
 		return nil, fmt.Errorf("paystack account resolve failed: %s", respTarget.Message)
 	}
 
 	return &respTarget, nil
 }
+func maskAccountNumber(accountNumber string) string {
+	if len(accountNumber) <= 4 {
+		return "****"
+	}
 
+	return strings.Repeat("*", len(accountNumber)-4) + accountNumber[len(accountNumber)-4:]
+}
 func (p *PaystackProvider) CreateCustomer(
 	ctx context.Context,
 	data *CreateCustomerBody,

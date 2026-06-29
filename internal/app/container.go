@@ -63,7 +63,7 @@ func NewContainer(db *gorm.DB, cfg *config.Config) *Container {
 	return &Container{
 		Auth:             auth.NewModule(db, walletModule.Svc, mailer),
 		Wallets:          walletModule,
-		WebhookHND:       webhooks.NewWebhookHandler(walletModule.Svc),
+		WebhookHND:       webhooks.NewWebhookHandler(walletModule.Svc, withdrawaModule.Svc),
 		PlansHND:         planHandler,
 		EnvelopHND:       envelopeHandler,
 		WithdrawalModule: withdrawaModule,

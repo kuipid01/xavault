@@ -3,7 +3,6 @@ package auth
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -58,7 +57,7 @@ func (s *AuthService) Register(req RegisterRequest) *response.APIResponse {
 			}
 			return &response.APIResponse{
 				Success: true,
-				Message: "Resent Verifcation link",
+				Message: "Verification OTP resent",
 				Data:    validData.Email,
 			}
 		} else {
@@ -85,6 +84,8 @@ func (s *AuthService) Register(req RegisterRequest) *response.APIResponse {
 		Password:        hashedPassword,
 		EmailVerifiedAt: &now,
 		MailVerified:    false,
+		Country:         validData.Country,
+		PhoneNumber:     validData.PhoneNumber,
 	}
 	_, err = s.repository.Create(&finalUser)
 	_, err = s.userVerificationFlow(finalUser.Email, "register")
@@ -184,17 +185,22 @@ func (s *AuthService) Login(req LoginRequest) *response.APIResponse {
 
 func (s *AuthService) ValidateMail(req ValidateMailRequest) *response.APIResponse {
 	req.Token = strings.TrimSpace(req.Token)
+	req.OTP = strings.TrimSpace(req.OTP)
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 
-	if req.Token != "" {
-		return s.VerifyEmail(req.Token)
+	if req.OTP != "" || req.Token != "" {
+		rawOTP := req.OTP
+		if rawOTP == "" {
+			rawOTP = req.Token
+		}
+		return s.VerifyEmail(rawOTP)
 	}
 
 	if req.Email == "" {
 		return &response.APIResponse{
 			Success: false,
-			Message: "Email or token is required",
-			Error:   "email_or_token_required",
+			Message: "Email or OTP is required",
+			Error:   "email_or_otp_required",
 		}
 	}
 
@@ -265,12 +271,14 @@ func (s *AuthService) ForgetPassword(req ForgetPasswordRequest) *response.APIRes
 
 	return &response.APIResponse{
 		Success: true,
-		Message: "Forget password email sent successfully",
+		Message: "Password reset OTP sent successfully",
 	}
 }
 func (s *AuthService) ResetPassword(req ResetPasswordRequest) *response.APIResponse {
 	req.Password = strings.TrimSpace(req.Password)
 	req.ConfirmPassword = strings.TrimSpace(req.ConfirmPassword)
+	req.Token = strings.TrimSpace(req.Token)
+	req.OTP = strings.TrimSpace(req.OTP)
 
 	validationErrors := validateResetPasswordData(req)
 	if len(validationErrors) > 0 {
@@ -281,15 +289,20 @@ func (s *AuthService) ResetPassword(req ResetPasswordRequest) *response.APIRespo
 		}
 	}
 
-	hashedToken := hashToken(req.Token)
+	rawOTP := req.OTP
+	if rawOTP == "" {
+		rawOTP = req.Token
+	}
 
-	user, err := s.CheckTokenValidity(req.Token)
+	hashedToken := hashToken(rawOTP)
+
+	user, err := s.CheckTokenValidity(rawOTP)
 	fmt.Println(err)
 
 	if err != nil {
 		return &response.APIResponse{
 			Success: false,
-			Message: "Could not verify token",
+			Message: "Could not verify OTP",
 			Error:   err.Error(),
 		}
 	}
@@ -390,6 +403,8 @@ func (s *AuthService) Me(req MeRequest) *response.APIResponse {
 			"email":              user.Email,
 			"mail_verified":      user.MailVerified,
 			"email_verified":     user.EmailVerifiedAt,
+			"country":            user.Country,
+			"phone_number":       user.PhoneNumber,
 			"has_withdrawal_pin": user.WithdrawalPinHash != nil && *user.WithdrawalPinHash != "",
 			"created_at":         user.CreatedAt,
 			"updated_at":         user.UpdatedAt,
@@ -671,18 +686,21 @@ func (s *AuthService) ChangePassword(req ResetPasswordRequest) *response.APIResp
 
 // /helpers
 func (s *AuthService) userVerificationFlow(email string, flowType string) (bool, error) {
-	token := generateToken()
-	tokenHash := hashToken(token)
+	otp, err := generateNumericOTP(6)
+	if err != nil {
+		return false, err
+	}
+	tokenHash := hashToken(otp)
 	mailExpiresAt := time.Now().Add(30 * time.Minute)
 	if err := s.repository.UpdateUserToken(email, tokenHash, mailExpiresAt); err != nil {
 		return false, err
 	}
 	if flowType == "forgetPassword" {
-		if err := s.sendForgetPasswordMail(email, token); err != nil {
+		if err := s.sendForgetPasswordMail(email, otp); err != nil {
 			return false, err
 		}
 	} else {
-		if err := s.sendVerificationEmail(email, token); err != nil {
+		if err := s.sendVerificationEmail(email, otp); err != nil {
 			return false, err
 		}
 	}
@@ -690,45 +708,11 @@ func (s *AuthService) userVerificationFlow(email string, flowType string) (bool,
 	return true, nil
 }
 
-func (s *AuthService) sendVerificationEmail(email, token string) error {
-	env := os.Getenv("APP_ENV")
-	var verifyURL string
-	if env == "production" {
-		frontendURL := os.Getenv("APP_FRONTEND_URL")
-		if frontendURL == "" {
-			frontendURL = "https://xavault.kuipid.com"
-		}
-		verifyURL = fmt.Sprintf("%s/verify-email?token=%s", frontendURL, token)
-	} else {
-		localURL := os.Getenv("APP_LOCAL_URL")
-		if localURL == "" {
-			localURL = "http://localhost:3000"
-		}
-		verifyURL = fmt.Sprintf("%s/verify-email?token=%s", localURL, token)
-	}
-	fmt.Println(verifyURL)
-	err := s.mailer.SendMailVerification(email, verifyURL)
-	return err
+func (s *AuthService) sendVerificationEmail(email, otp string) error {
+	return s.mailer.SendMailVerification(email, otp)
 }
-func (s *AuthService) sendForgetPasswordMail(email, token string) error {
-	env := os.Getenv("APP_ENV")
-	var resetPasswordURL string
-	if env == "production" {
-		frontendURL := os.Getenv("APP_FRONTEND_URL")
-		if frontendURL == "" {
-			frontendURL = "https://xavault.kuipid.com"
-		}
-		resetPasswordURL = fmt.Sprintf("%s/reset-password?token=%s", frontendURL, token)
-	} else {
-		localURL := os.Getenv("APP_LOCAL_URL")
-		if localURL == "" {
-			localURL = "http://localhost:3000"
-		}
-		resetPasswordURL = fmt.Sprintf("%s/reset-password?token=%s", localURL, token)
-	}
-	fmt.Println(resetPasswordURL, "RESET PASSWORD URL")
-	err := s.mailer.SendForgetPasswordMail(email, resetPasswordURL)
-	return err
+func (s *AuthService) sendForgetPasswordMail(email, otp string) error {
+	return s.mailer.SendForgetPasswordMail(email, otp)
 }
 
 func (s *AuthService) VerifyEmail(rawToken string) *response.APIResponse {
@@ -737,7 +721,7 @@ func (s *AuthService) VerifyEmail(rawToken string) *response.APIResponse {
 	if err != nil {
 		return &response.APIResponse{
 			Success: false,
-			Message: "Could not verify email",
+			Message: "Could not verify email OTP",
 			Error:   err,
 		}
 	}

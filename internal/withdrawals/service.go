@@ -2,7 +2,9 @@ package withdrawals
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -10,6 +12,7 @@ import (
 	bankaccounts "github.com/kuipid01/salary-vault/internal/bank_accounts"
 	"github.com/kuipid01/salary-vault/internal/envelope"
 	paymentproviders "github.com/kuipid01/salary-vault/internal/platform/payment-providers"
+	httpclient "github.com/kuipid01/salary-vault/internal/shared/client"
 	client "github.com/kuipid01/salary-vault/internal/shared/client/idempotence"
 	"github.com/kuipid01/salary-vault/internal/shared/response"
 	"github.com/kuipid01/salary-vault/internal/shared/security"
@@ -19,6 +22,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
+
+const localPendingWithdrawalGracePeriod = 2 * time.Minute
 
 type WithdrawalService struct {
 	repo               *WithdrawalRepository
@@ -243,26 +248,20 @@ func (s *WithdrawalService) RequestWithdrawal(
 				if err != nil {
 					return err
 				}
-
 				if !preview.CanWithdraw {
 					return ErrInsufficientWithdrawable
 				}
 
-				// Optional but recommended:
-				// Block duplicate pending withdrawal against the same plan/source/envelope.
-				exists, err := s.repo.HasPendingWithdrawalForSourceTx(
+				err = s.ensureNoBlockingOpenWithdrawalTx(
 					tx,
 					userID,
 					planID,
 					req.SourceType,
 					req.EnvelopeID,
+					now,
 				)
 				if err != nil {
 					return err
-				}
-
-				if exists {
-					return ErrPendingWithdrawalExists
 				}
 
 				// Critical money check:
@@ -463,7 +462,7 @@ func (s *WithdrawalService) markFailedWithdrawalInitiation(
 			UserID:    userID,
 			WalletID:  walletID,
 			Currency:  currency,
-			Reference: reference,
+			Reference: "WITHDRAWAL_FAILED_" + withdrawalID,
 
 			Source:   wallets.WalletLedgerSourceWithdrawal,
 			SourceID: withdrawalID,
@@ -526,6 +525,49 @@ func (s *WithdrawalService) GetPlanWithdrawals(
 	}
 }
 
+func (s *WithdrawalService) ensureNoBlockingOpenWithdrawalTx(
+	tx *gorm.DB,
+	userID string,
+	planID string,
+	sourceType string,
+	envelopeID *string,
+	now time.Time,
+) error {
+	openWithdrawal, err := s.repo.FindOpenWithdrawalForSourceTx(
+		tx,
+		userID,
+		planID,
+		sourceType,
+		normalizeOptionalString(envelopeID),
+	)
+	if err != nil {
+		return err
+	}
+
+	if openWithdrawal == nil {
+		return nil
+	}
+
+	if openWithdrawal.Status == WithdrawalStatusProcessing ||
+		openWithdrawal.TransferInitiatedAt != nil ||
+		openWithdrawal.ProviderTransferCode != "" {
+		return ErrWithdrawalAlreadyProcessing
+	}
+
+	if now.Sub(openWithdrawal.CreatedAt) < localPendingWithdrawalGracePeriod {
+		return ErrWithdrawalRequestInProgress
+	}
+
+	return s.repo.MarkFailedWithTx(
+		tx,
+		openWithdrawal.ID,
+		fmt.Sprintf(
+			"stale local pending withdrawal expired after %s without Paystack transfer initiation",
+			localPendingWithdrawalGracePeriod,
+		),
+	)
+}
+
 func (s *WithdrawalService) GetWithdrawalByID(
 	userID string,
 	withdrawalID string,
@@ -564,6 +606,121 @@ func (s *WithdrawalService) GetWithdrawalByID(
 	}
 }
 
+func (s *WithdrawalService) CompleteProviderWithdrawal(reference string, providerStatus string) *response.APIResponse {
+	reference = strings.TrimSpace(reference)
+	if reference == "" {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Withdrawal reference is required",
+			Error:   "withdrawal_reference_required",
+		}
+	}
+
+	err := s.repo.WithTransaction(func(tx *gorm.DB) error {
+		withdrawal, err := s.repo.FindByReferenceForUpdate(tx, reference)
+		if err != nil {
+			return err
+		}
+
+		if withdrawal == nil {
+			return ErrWithdrawalNotFound
+		}
+
+		if withdrawal.Status == WithdrawalStatusPaid {
+			return nil
+		}
+
+		if withdrawal.Status == WithdrawalStatusFailed || withdrawal.Status == WithdrawalStatusCancelled {
+			return fmt.Errorf("withdrawal is already final with status %s", withdrawal.Status)
+		}
+
+		lockedBefore, updatedWallet, err := s.walletRepo.CompleteWithdrawalTx(
+			tx,
+			withdrawal.UserID,
+			withdrawal.WalletID,
+			withdrawal.Amount,
+		)
+		if err != nil {
+			return err
+		}
+
+		if err := s.repo.MarkPaidWithTx(tx, withdrawal.ID, providerStatus); err != nil {
+			return err
+		}
+
+		ledger := &wallets.WalletLedger{
+			ID:            security.GenateUniqueID(),
+			UserID:        withdrawal.UserID,
+			WalletID:      withdrawal.WalletID,
+			Currency:      withdrawal.Currency,
+			Reference:     "WITHDRAWAL_PAID_" + withdrawal.ID,
+			Source:        wallets.WalletLedgerSourceWithdrawal,
+			SourceID:      withdrawal.ID,
+			Type:          wallets.WalletLedgerTypeWithdrawalDebit,
+			Amount:        withdrawal.Amount,
+			BalanceBefore: lockedBefore,
+			BalanceAfter:  updatedWallet.LockedBalance,
+			Description:   "Withdrawal completed by Paystack",
+			CreatedAt:     time.Now(),
+		}
+
+		_, err = s.walletRepo.CreateWalletLedgerTx(tx, ledger)
+		return err
+	})
+
+	if err != nil {
+		return withdrawalErrorResponse("Could not complete withdrawal", err)
+	}
+
+	return &response.APIResponse{
+		Success: true,
+		Message: "Withdrawal completed successfully",
+	}
+}
+
+func (s *WithdrawalService) FailProviderWithdrawal(reference string, providerStatus string, reason string) *response.APIResponse {
+	reference = strings.TrimSpace(reference)
+	if reference == "" {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Withdrawal reference is required",
+			Error:   "withdrawal_reference_required",
+		}
+	}
+
+	err := s.repo.WithTransaction(func(tx *gorm.DB) error {
+		withdrawal, err := s.repo.FindByReferenceForUpdate(tx, reference)
+		if err != nil {
+			return err
+		}
+
+		if withdrawal == nil {
+			return ErrWithdrawalNotFound
+		}
+
+		if withdrawal.Status == WithdrawalStatusPaid ||
+			withdrawal.Status == WithdrawalStatusFailed ||
+			withdrawal.Status == WithdrawalStatusCancelled {
+			return nil
+		}
+
+		if reason == "" {
+			reason = "Paystack transfer " + providerStatus
+		}
+
+		return s.repo.MarkFailedWithTx(tx, withdrawal.ID, reason)
+	})
+
+	if err != nil {
+		return withdrawalErrorResponse("Could not fail withdrawal", err)
+	}
+
+	return &response.APIResponse{
+		Success: true,
+		Message: "Withdrawal marked failed successfully",
+	}
+}
+
 func (s *WithdrawalService) calculateWithdrawalPreview(
 	userID string,
 	planID string,
@@ -582,22 +739,71 @@ func (s *WithdrawalService) calculateWithdrawalPreviewTx(
 	envelopeID *string,
 	amount int64,
 ) (*PreviewWithdrawalResponse, error) {
+	log.Printf(
+		"[withdrawal_preview] start userID=%s planID=%s sourceType=%q envelopeID=%v amount=%d",
+		userID,
+		planID,
+		sourceType,
+		envelopeID,
+		amount,
+	)
+
 	sourceType = strings.TrimSpace(sourceType)
 
+	log.Printf(
+		"[withdrawal_preview] normalized input userID=%s planID=%s sourceType=%q envelopeID=%v amount=%d",
+		userID,
+		planID,
+		sourceType,
+		envelopeID,
+		amount,
+	)
+
 	if amount <= 0 {
+		log.Printf(
+			"[withdrawal_preview] invalid amount userID=%s planID=%s amount=%d",
+			userID,
+			planID,
+			amount,
+		)
 		return nil, ErrInvalidWithdrawalAmount
 	}
 
 	plan, err := s.findPlanForWithdrawal(tx, planID, userID)
 	if err != nil {
+		log.Printf(
+			"[withdrawal_preview] failed to find plan userID=%s planID=%s err=%v",
+			userID,
+			planID,
+			err,
+		)
 		return nil, err
 	}
 
 	if plan == nil {
+		log.Printf(
+			"[withdrawal_preview] plan not found userID=%s planID=%s",
+			userID,
+			planID,
+		)
 		return nil, ErrPlanNotFound
 	}
 
+	log.Printf(
+		"[withdrawal_preview] plan found userID=%s planID=%s planStatus=%s planAmount=%d",
+		userID,
+		plan.ID,
+		plan.Status,
+		plan.Amount,
+	)
+
 	if !isPlanWithdrawableStatus(plan.Status) {
+		log.Printf(
+			"[withdrawal_preview] plan not withdrawable userID=%s planID=%s planStatus=%s",
+			userID,
+			plan.ID,
+			plan.Status,
+		)
 		return nil, ErrPlanNotActive
 	}
 
@@ -605,37 +811,119 @@ func (s *WithdrawalService) calculateWithdrawalPreviewTx(
 
 	switch sourceType {
 	case WithdrawalSourcePlanUnboxed:
+		log.Printf(
+			"[withdrawal_preview] calculating plan unboxed withdrawable userID=%s planID=%s",
+			userID,
+			plan.ID,
+		)
+
 		if envelopeID != nil && strings.TrimSpace(*envelopeID) != "" {
+			log.Printf(
+				"[withdrawal_preview] envelope not allowed for unboxed withdrawal userID=%s planID=%s envelopeID=%q",
+				userID,
+				plan.ID,
+				*envelopeID,
+			)
 			return nil, ErrEnvelopeNotAllowed
 		}
 
 		withdrawableBalance, err = s.calculatePlanUnboxedWithdrawable(tx, plan.ID, userID, plan.Amount)
 		if err != nil {
+			log.Printf(
+				"[withdrawal_preview] failed to calculate plan unboxed withdrawable userID=%s planID=%s err=%v",
+				userID,
+				plan.ID,
+				err,
+			)
 			return nil, err
 		}
 
+		log.Printf(
+			"[withdrawal_preview] calculated plan unboxed withdrawable userID=%s planID=%s withdrawableBalance=%d",
+			userID,
+			plan.ID,
+			withdrawableBalance,
+		)
+
 	case WithdrawalSourceEnvelope:
 		normalizedEnvelopeID := normalizeOptionalString(envelopeID)
+
+		log.Printf(
+			"[withdrawal_preview] calculating envelope withdrawable userID=%s planID=%s envelopeID=%v",
+			userID,
+			plan.ID,
+			normalizedEnvelopeID,
+		)
+
 		if normalizedEnvelopeID == nil {
+			log.Printf(
+				"[withdrawal_preview] envelope required userID=%s planID=%s",
+				userID,
+				plan.ID,
+			)
 			return nil, ErrEnvelopeRequired
 		}
 
 		withdrawableBalance, err = s.calculateEnvelopeWithdrawable(tx, plan.ID, userID, *normalizedEnvelopeID)
 		if err != nil {
+			log.Printf(
+				"[withdrawal_preview] failed to calculate envelope withdrawable userID=%s planID=%s envelopeID=%s err=%v",
+				userID,
+				plan.ID,
+				*normalizedEnvelopeID,
+				err,
+			)
 			return nil, err
 		}
 
+		log.Printf(
+			"[withdrawal_preview] calculated envelope withdrawable userID=%s planID=%s envelopeID=%s withdrawableBalance=%d",
+			userID,
+			plan.ID,
+			*normalizedEnvelopeID,
+			withdrawableBalance,
+		)
+
 	default:
+		log.Printf(
+			"[withdrawal_preview] invalid withdrawal source userID=%s planID=%s sourceType=%q",
+			userID,
+			plan.ID,
+			sourceType,
+		)
 		return nil, ErrInvalidWithdrawalSource
 	}
 
 	validationErrors := []string{}
 
 	if amount > withdrawableBalance {
+		log.Printf(
+			"[withdrawal_preview] insufficient withdrawable balance userID=%s planID=%s sourceType=%s amount=%d withdrawableBalance=%d",
+			userID,
+			plan.ID,
+			sourceType,
+			amount,
+			withdrawableBalance,
+		)
+
 		validationErrors = append(validationErrors, "Insufficient withdrawable balance")
 	}
 
 	canWithdraw := len(validationErrors) == 0
+	remainingBalance := withdrawableBalance - amount
+
+	log.Printf(
+		"[withdrawal_preview] completed userID=%s planID=%s sourceType=%s envelopeID=%v amount=%d withdrawableBalance=%d remainingBalance=%d canWithdraw=%t validationErrors=%v",
+		userID,
+		plan.ID,
+		sourceType,
+		normalizeOptionalString(envelopeID),
+		amount,
+		withdrawableBalance,
+		remainingBalance,
+		canWithdraw,
+		validationErrors,
+	)
 
 	return &PreviewWithdrawalResponse{
 		CanWithdraw:         canWithdraw,
@@ -644,7 +932,7 @@ func (s *WithdrawalService) calculateWithdrawalPreviewTx(
 		EnvelopeID:          normalizeOptionalString(envelopeID),
 		RequestedAmount:     amount,
 		WithdrawableBalance: withdrawableBalance,
-		RemainingBalance:    withdrawableBalance - amount,
+		RemainingBalance:    remainingBalance,
 		ValidationErrors:    validationErrors,
 	}, nil
 }
@@ -988,6 +1276,22 @@ func withdrawalErrorResponse(message string, err error) *response.APIResponse {
 		}
 	}
 
+	if err == ErrWithdrawalRequestInProgress {
+		return &response.APIResponse{
+			Success: false,
+			Message: "A withdrawal request for this source is still being prepared. Please wait a moment.",
+			Error:   err,
+		}
+	}
+
+	if err == ErrWithdrawalAlreadyProcessing {
+		return &response.APIResponse{
+			Success: false,
+			Message: "A withdrawal from this source is already processing with Paystack.",
+			Error:   err,
+		}
+	}
+
 	if err == ErrWithdrawalPinNotSet {
 		return &response.APIResponse{
 			Success: false,
@@ -1001,6 +1305,25 @@ func withdrawalErrorResponse(message string, err error) *response.APIResponse {
 			Success: false,
 			Message: "Invalid withdrawal PIN",
 			Error:   err,
+		}
+	}
+
+	var externalErr *httpclient.ExternalAPIError
+	if errors.As(err, &externalErr) {
+		message := externalErr.Message
+		if message == "" {
+			message = "Payment provider rejected the request"
+		}
+
+		return &response.APIResponse{
+			Success: false,
+			Message: message,
+			Error: map[string]interface{}{
+				"provider":    paymentproviders.Paystack,
+				"status_code": externalErr.StatusCode,
+				"code":        externalErr.Code,
+				"type":        externalErr.Type,
+			},
 		}
 	}
 

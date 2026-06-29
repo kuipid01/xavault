@@ -7,6 +7,8 @@ type User struct {
 	Email                       string     `json:"email"`
 	Password                    string     `json:"password"`
 	MailVerified                bool       `json:"mail_verified"`
+	Country                     string     `json:"country"`
+	PhoneNumber                 string     `json:"phone_number"`
 	EmailVerifiedAt             *time.Time `json:"email_verified_at"`
 	VerificationToken           *string    `json:"verification_token"`
 	VerificationTokenExpiresAt  *time.Time `json:"verification_token_expires_at"`

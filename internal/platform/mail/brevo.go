@@ -97,16 +97,16 @@ func (b *BrevoMailer) sendHTMLMail(
 	return nil
 }
 
-func (b *BrevoMailer) SendMailVerification(email, verifyURL string) error {
+func (b *BrevoMailer) SendMailVerification(email, otp string) error {
 	data := struct {
 		Name          string
 		AppName       string
-		VerifyURL     string
+		OTP           string
 		ExpiryMinutes int
 	}{
 		Name:          "",
 		AppName:       "Salary Vault",
-		VerifyURL:     verifyURL,
+		OTP:           otp,
 		ExpiryMinutes: 30,
 	}
 
@@ -126,17 +126,17 @@ func (b *BrevoMailer) SendMailVerification(email, verifyURL string) error {
 
 	return err
 }
-func (b *BrevoMailer) SendForgetPasswordMail(email, resetPasswordURL string) error {
+func (b *BrevoMailer) SendForgetPasswordMail(email, otp string) error {
 	data := struct {
-		Name             string
-		AppName          string
-		ResetPasswordURL string
-		ExpiryMinutes    int
+		Name          string
+		AppName       string
+		OTP           string
+		ExpiryMinutes int
 	}{
-		Name:             "",
-		AppName:          "Salary Vault",
-		ResetPasswordURL: resetPasswordURL,
-		ExpiryMinutes:    30,
+		Name:          "",
+		AppName:       "Salary Vault",
+		OTP:           otp,
+		ExpiryMinutes: 30,
 	}
 
 	htmlContent, err := RenderEmailTemplate("forget_password.html", data)

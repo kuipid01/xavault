@@ -11,14 +11,16 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/kuipid01/salary-vault/internal/wallets"
+	"github.com/kuipid01/salary-vault/internal/withdrawals"
 )
 
 type WebhookHandler struct {
-	walletService *wallets.WalletService
+	walletService     *wallets.WalletService
+	withdrawalService *withdrawals.WithdrawalService
 }
 
-func NewWebhookHandler(ws *wallets.WalletService) *WebhookHandler {
-	return &WebhookHandler{walletService: ws}
+func NewWebhookHandler(ws *wallets.WalletService, withdrawalService *withdrawals.WithdrawalService) *WebhookHandler {
+	return &WebhookHandler{walletService: ws, withdrawalService: withdrawalService}
 }
 
 // PaystackWebhook handles all events from Paystack in one place
@@ -78,10 +80,31 @@ func (h *WebhookHandler) ExtractAndProcessEvent(bodyText string) error {
 			h.walletService.CreditWallet(chargeData.Reference, chargeData.Amount)
 		}
 
-	case "transfer.reversed":
-		// Handle transfer reversals here...
-		fmt.Printf("⚠️ Transfer reversed event detected")
+	case "transfer.success":
+		var transferData TransferEventData
+		if err := json.Unmarshal(envelope.Data, &transferData); err != nil {
+			return fmt.Errorf("failed to parse transfer.success data: %w", err)
+		}
 
+		result := h.withdrawalService.CompleteProviderWithdrawal(transferData.Reference, transferData.Status)
+		if result.Error != nil {
+			return fmt.Errorf("failed to complete withdrawal: %v", result.Error)
+		}
+
+	case "transfer.failed", "transfer.reversed":
+		var transferData TransferEventData
+		if err := json.Unmarshal(envelope.Data, &transferData); err != nil {
+			return fmt.Errorf("failed to parse %s data: %w", envelope.Event, err)
+		}
+
+		result := h.withdrawalService.FailProviderWithdrawal(
+			transferData.Reference,
+			transferData.Status,
+			transferData.Reason,
+		)
+		if result.Error != nil {
+			return fmt.Errorf("failed to fail withdrawal: %v", result.Error)
+		}
 	default:
 		log.Printf("ℹ️ Ignored unhandled event hook: %s", envelope.Event)
 	}
