@@ -190,3 +190,64 @@ func (h *AuthHandler) ChangePassword(c *fiber.Ctx) error {
 
 	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
 }
+
+func (h *AuthHandler) WithdrawalPinStatus(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(string)
+
+	result := h.authService.WithdrawalPinStatus(WithdrawalPinStatusRequest{
+		UserID: userID,
+	})
+
+	if result.Error != nil {
+		return response.Error(c, fiber.StatusBadRequest, result.Message, result.Error)
+	}
+
+	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
+}
+
+func (h *AuthHandler) SetWithdrawalPin(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(string)
+
+	var req SetWithdrawalPinRequest
+	if err := c.BodyParser(&req); err != nil {
+		return response.Error(c, fiber.StatusBadRequest, "Invalid request", err)
+	}
+	req.UserID = userID
+
+	result := h.authService.SetWithdrawalPin(req)
+	if result.Error != nil {
+		return response.Error(c, fiber.StatusBadRequest, result.Message, result.Error)
+	}
+
+	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
+}
+
+func (h *AuthHandler) ForgotWithdrawalPin(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(string)
+
+	result := h.authService.ForgotWithdrawalPin(ForgotWithdrawalPinRequest{
+		UserID: userID,
+	})
+	if result.Error != nil {
+		return response.Error(c, fiber.StatusBadRequest, result.Message, result.Error)
+	}
+
+	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
+}
+
+func (h *AuthHandler) ResetWithdrawalPin(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(string)
+
+	var req ResetWithdrawalPinRequest
+	if err := c.BodyParser(&req); err != nil {
+		return response.Error(c, fiber.StatusBadRequest, "Invalid request", err)
+	}
+	req.UserID = userID
+
+	result := h.authService.ResetWithdrawalPin(req)
+	if result.Error != nil {
+		return response.Error(c, fiber.StatusBadRequest, result.Message, result.Error)
+	}
+
+	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
+}

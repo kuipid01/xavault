@@ -15,4 +15,7 @@ var (
 	ErrWalletNotFound                  = errors.New("wallet not found")
 	ErrSpendingPlanLockedUntilPlanEnds = errors.New("spending plan is locked until the plan ends")
 	ErrPendingWithdrawalExists         = errors.New("pending withdrawal already exists")
+	ErrInvalidWithdrawalDestination    = errors.New("invalid withdrawal destination")
+	ErrWithdrawalPinNotSet             = errors.New("withdrawal pin is not set")
+	ErrInvalidWithdrawalPin            = errors.New("invalid withdrawal pin")
 )

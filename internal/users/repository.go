@@ -105,6 +105,28 @@ func (r *UserRepository) UpdateRefreshToken(userID string, refreshToken string) 
 	return r.db.Model(&User{}).Where("id = ?", userID).Update("refresh_token", refreshToken).Error
 }
 
+func (r *UserRepository) UpdateWithdrawalPin(userID string, pinHash string) error {
+	return r.db.Model(&User{}).Where("id = ?", userID).Updates(map[string]interface{}{
+		"withdrawal_pin_hash":             pinHash,
+		"withdrawal_pin_reset_otp":        nil,
+		"withdrawal_pin_reset_expires_at": nil,
+	}).Error
+}
+
+func (r *UserRepository) UpdateWithdrawalPinResetOTP(userID string, otpHash string, expiresAt time.Time) error {
+	return r.db.Model(&User{}).Where("id = ?", userID).Updates(map[string]interface{}{
+		"withdrawal_pin_reset_otp":        otpHash,
+		"withdrawal_pin_reset_expires_at": expiresAt,
+	}).Error
+}
+
+func (r *UserRepository) ClearWithdrawalPinResetOTP(userID string) error {
+	return r.db.Model(&User{}).Where("id = ?", userID).Updates(map[string]interface{}{
+		"withdrawal_pin_reset_otp":        nil,
+		"withdrawal_pin_reset_expires_at": nil,
+	}).Error
+}
+
 func (r *UserRepository) FindById(id string) (*User, error) {
 	var user User
 

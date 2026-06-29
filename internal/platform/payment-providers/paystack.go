@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 
 	"github.com/kuipid01/salary-vault/internal/shared/client"
@@ -69,6 +70,102 @@ func (p *PaystackProvider) VerifyDeposit(ctx context.Context, reference string) 
 		Data:    respTarget,
 	}, nil
 
+}
+
+func (p *PaystackProvider) ListBanks(ctx context.Context) (*ListBanksResponse, error) {
+	headers := map[string]string{
+		"Authorization": "Bearer " + p.apiKey,
+	}
+
+	var respTarget ListBanksResponse
+
+	url := p.baseUrl + "/bank?country=nigeria&currency=NGN&type=nuban"
+	err := p.reusableClient.DoRequest(ctx, http.MethodGet, url, headers, nil, &respTarget)
+	if err != nil {
+		return nil, err
+	}
+
+	if !respTarget.Status {
+		return nil, fmt.Errorf("paystack bank list failed: %s", respTarget.Message)
+	}
+
+	return &respTarget, nil
+}
+
+func (p *PaystackProvider) ResolveBankAccount(
+	ctx context.Context,
+	accountNumber string,
+	bankCode string,
+) (*ResolveBankAccountResponse, error) {
+	headers := map[string]string{
+		"Authorization": "Bearer " + p.apiKey,
+	}
+
+	var respTarget ResolveBankAccountResponse
+
+	params := url.Values{}
+	params.Set("account_number", accountNumber)
+	params.Set("bank_code", bankCode)
+
+	requestURL := p.baseUrl + "/bank/resolve?" + params.Encode()
+	err := p.reusableClient.DoRequest(ctx, http.MethodGet, requestURL, headers, nil, &respTarget)
+	if err != nil {
+		return nil, err
+	}
+
+	if !respTarget.Status {
+		return nil, fmt.Errorf("paystack account resolve failed: %s", respTarget.Message)
+	}
+
+	return &respTarget, nil
+}
+
+func (p *PaystackProvider) CreateCustomer(
+	ctx context.Context,
+	data *CreateCustomerBody,
+) (*CreateCustomerResponse, error) {
+	headers := map[string]string{
+		"Authorization": "Bearer " + p.apiKey,
+		"Content-Type":  "application/json",
+	}
+
+	var respTarget CreateCustomerResponse
+
+	url := p.baseUrl + "/customer"
+	err := p.reusableClient.DoRequest(ctx, http.MethodPost, url, headers, data, &respTarget)
+	if err != nil {
+		return nil, err
+	}
+
+	if !respTarget.Status {
+		return nil, fmt.Errorf("paystack customer creation failed: %s", respTarget.Message)
+	}
+
+	return &respTarget, nil
+}
+
+func (p *PaystackProvider) CreateDedicatedAccount(
+	ctx context.Context,
+	data *CreateDedicatedAccountBody,
+) (*CreateDedicatedAccountResponse, error) {
+	headers := map[string]string{
+		"Authorization": "Bearer " + p.apiKey,
+		"Content-Type":  "application/json",
+	}
+
+	var respTarget CreateDedicatedAccountResponse
+
+	url := p.baseUrl + "/dedicated_account"
+	err := p.reusableClient.DoRequest(ctx, http.MethodPost, url, headers, data, &respTarget)
+	if err != nil {
+		return nil, err
+	}
+
+	if !respTarget.Status {
+		return nil, fmt.Errorf("paystack dedicated account creation failed: %s", respTarget.Message)
+	}
+
+	return &respTarget, nil
 }
 
 func (p *PaystackProvider) CreateTransferRecipient(

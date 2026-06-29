@@ -24,6 +24,20 @@ func (h *WalletHandler) GetMyWallet(c *fiber.Ctx) error {
 
 	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
 }
+
+func (h *WalletHandler) EnsureDedicatedAccount(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(string)
+	email := c.Locals("email").(string)
+
+	result := h.svc.EnsureDedicatedAccount(c.UserContext(), userID, email)
+
+	if result.Error != nil {
+		return response.Error(c, fiber.StatusBadRequest, result.Message, result.Error)
+	}
+
+	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
+}
+
 func (h *WalletHandler) InitiateDeposit(c *fiber.Ctx) error {
 	userID := c.Locals("user_id").(string)
 	email := c.Locals("email").(string)

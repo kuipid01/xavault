@@ -33,6 +33,16 @@ func (repo *WalletRepository) GetWalletByOwnerID(ownerID string) (*Wallet, error
 	return &wallet, nil
 }
 
+func (repo *WalletRepository) GetWalletByDedicatedAccountNumber(accountNumber string) (*Wallet, error) {
+	var wallet Wallet
+
+	if err := repo.db.Where("dedicated_account_number = ?", accountNumber).First(&wallet).Error; err != nil {
+		return nil, err
+	}
+
+	return &wallet, nil
+}
+
 func (repo *WalletRepository) GetWalletByID(walletID string) (*Wallet, error) {
 	var wallet Wallet
 
@@ -297,10 +307,9 @@ func (repo *WalletRepository) DebitLockedFundsForWithdrawalTx(
 
 // Data flow:
 // 1. Lock wallet row with SELECT FOR UPDATE.
-// 2. Ensure available balance is enough.
-// 3. Move funds from available to locked.
-// 4. Save wallet in same transaction.
-func (r *WalletRepository) HoldFundsForWithdrawalTx(
+// 2. Ensure locked balance can cover this withdrawal.
+// 3. Keep balances unchanged until Paystack confirms success.
+func (r *WalletRepository) VerifyLockedFundsForWithdrawalTx(
 	tx *gorm.DB,
 	userID string,
 	walletID string,
@@ -320,16 +329,12 @@ func (r *WalletRepository) HoldFundsForWithdrawalTx(
 		return nil, err
 	}
 
-	if wallet.AvailableBalance < amount {
-		return nil, ErrInsufficientWalletBalance
+	if amount <= 0 {
+		return nil, ErrInvalidWalletAmount
 	}
 
-	wallet.AvailableBalance -= amount
-	wallet.LockedBalance += amount
-
-	err = tx.Save(&wallet).Error
-	if err != nil {
-		return nil, err
+	if wallet.LockedBalance < amount {
+		return nil, ErrInsufficientLockedBalance
 	}
 
 	return &wallet, nil

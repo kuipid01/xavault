@@ -385,7 +385,219 @@ func (s *AuthService) Me(req MeRequest) *response.APIResponse {
 	return &response.APIResponse{
 		Success: true,
 		Message: "User found",
-		Data:    user,
+		Data: fiber.Map{
+			"id":                 user.ID,
+			"email":              user.Email,
+			"mail_verified":      user.MailVerified,
+			"email_verified":     user.EmailVerifiedAt,
+			"has_withdrawal_pin": user.WithdrawalPinHash != nil && *user.WithdrawalPinHash != "",
+			"created_at":         user.CreatedAt,
+			"updated_at":         user.UpdatedAt,
+		},
+	}
+}
+
+func (s *AuthService) WithdrawalPinStatus(req WithdrawalPinStatusRequest) *response.APIResponse {
+	user, err := s.repository.FindById(req.UserID)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not fetch withdrawal PIN status",
+			Error:   err.Error(),
+		}
+	}
+
+	if user == nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "User not found",
+			Error:   "user_not_found",
+		}
+	}
+
+	return &response.APIResponse{
+		Success: true,
+		Message: "Withdrawal PIN status fetched",
+		Data: fiber.Map{
+			"has_pin": user.WithdrawalPinHash != nil && *user.WithdrawalPinHash != "",
+		},
+	}
+}
+
+func (s *AuthService) SetWithdrawalPin(req SetWithdrawalPinRequest) *response.APIResponse {
+	req.Pin = strings.TrimSpace(req.Pin)
+
+	if validationErrors := validateWithdrawalPin(req.Pin); len(validationErrors) > 0 {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Invalid withdrawal PIN",
+			Error:   validationErrors,
+		}
+	}
+
+	user, err := s.repository.FindById(req.UserID)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not fetch user",
+			Error:   err.Error(),
+		}
+	}
+
+	if user == nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "User not found",
+			Error:   "user_not_found",
+		}
+	}
+
+	pinHash, err := hashPassword(req.Pin)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not secure withdrawal PIN",
+			Error:   err.Error(),
+		}
+	}
+
+	if err := s.repository.UpdateWithdrawalPin(req.UserID, pinHash); err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not save withdrawal PIN",
+			Error:   err.Error(),
+		}
+	}
+
+	return &response.APIResponse{
+		Success: true,
+		Message: "Withdrawal PIN saved successfully",
+		Data: fiber.Map{
+			"has_pin": true,
+		},
+	}
+}
+
+func (s *AuthService) ForgotWithdrawalPin(req ForgotWithdrawalPinRequest) *response.APIResponse {
+	user, err := s.repository.FindById(req.UserID)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not fetch user",
+			Error:   err.Error(),
+		}
+	}
+
+	if user == nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "User not found",
+			Error:   "user_not_found",
+		}
+	}
+
+	otp, err := generateNumericOTP(6)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not generate reset OTP",
+			Error:   err.Error(),
+		}
+	}
+
+	if err := s.repository.UpdateWithdrawalPinResetOTP(user.ID, hashToken(otp), time.Now().Add(10*time.Minute)); err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not save reset OTP",
+			Error:   err.Error(),
+		}
+	}
+
+	if err := s.mailer.SendWithdrawalPinOTP(user.Email, otp); err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not send reset OTP",
+			Error:   err.Error(),
+		}
+	}
+
+	return &response.APIResponse{
+		Success: true,
+		Message: "Withdrawal PIN reset OTP sent successfully",
+	}
+}
+
+func (s *AuthService) ResetWithdrawalPin(req ResetWithdrawalPinRequest) *response.APIResponse {
+	req.OTP = strings.TrimSpace(req.OTP)
+	req.Pin = strings.TrimSpace(req.Pin)
+
+	if validationErrors := validateWithdrawalPinOTP(req.OTP); len(validationErrors) > 0 {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Invalid OTP",
+			Error:   validationErrors,
+		}
+	}
+
+	if validationErrors := validateWithdrawalPin(req.Pin); len(validationErrors) > 0 {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Invalid withdrawal PIN",
+			Error:   validationErrors,
+		}
+	}
+
+	user, err := s.repository.FindById(req.UserID)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not fetch user",
+			Error:   err.Error(),
+		}
+	}
+
+	if user == nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "User not found",
+			Error:   "user_not_found",
+		}
+	}
+
+	if user.WithdrawalPinResetOTP == nil ||
+		*user.WithdrawalPinResetOTP != hashToken(req.OTP) ||
+		user.WithdrawalPinResetExpiresAt == nil ||
+		time.Now().After(*user.WithdrawalPinResetExpiresAt) {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Invalid or expired OTP",
+			Error:   "invalid_or_expired_otp",
+		}
+	}
+
+	pinHash, err := hashPassword(req.Pin)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not secure withdrawal PIN",
+			Error:   err.Error(),
+		}
+	}
+
+	if err := s.repository.UpdateWithdrawalPin(user.ID, pinHash); err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not save withdrawal PIN",
+			Error:   err.Error(),
+		}
+	}
+
+	return &response.APIResponse{
+		Success: true,
+		Message: "Withdrawal PIN reset successfully",
+		Data: fiber.Map{
+			"has_pin": true,
+		},
 	}
 }
 

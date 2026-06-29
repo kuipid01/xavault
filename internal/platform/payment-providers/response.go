@@ -19,6 +19,82 @@ type DepositBody struct {
 	Reference   string `json:"reference" validate:"required"`
 	CallbackURL string `json:"callback_url" validate:"required"`
 }
+
+type PaystackBank struct {
+	Name     string `json:"name"`
+	Slug     string `json:"slug"`
+	Code     string `json:"code"`
+	LongCode string `json:"longcode"`
+	Country  string `json:"country"`
+	Currency string `json:"currency"`
+	Type     string `json:"type"`
+}
+
+type ListBanksResponse struct {
+	Status  bool           `json:"status"`
+	Message string         `json:"message"`
+	Data    []PaystackBank `json:"data"`
+}
+
+type ResolveBankAccountData struct {
+	AccountNumber string `json:"account_number"`
+	AccountName   string `json:"account_name"`
+	BankID        int64  `json:"bank_id"`
+}
+
+type ResolveBankAccountResponse struct {
+	Status  bool                   `json:"status"`
+	Message string                 `json:"message"`
+	Data    ResolveBankAccountData `json:"data"`
+}
+
+type CreateCustomerBody struct {
+	Email     string `json:"email"`
+	FirstName string `json:"first_name,omitempty"`
+	LastName  string `json:"last_name,omitempty"`
+	Phone     string `json:"phone,omitempty"`
+}
+
+type PaystackCustomerData struct {
+	ID           int64  `json:"id"`
+	Email        string `json:"email"`
+	CustomerCode string `json:"customer_code"`
+	FirstName    string `json:"first_name"`
+	LastName     string `json:"last_name"`
+}
+
+type CreateCustomerResponse struct {
+	Status  bool                 `json:"status"`
+	Message string               `json:"message"`
+	Data    PaystackCustomerData `json:"data"`
+}
+
+type CreateDedicatedAccountBody struct {
+	Customer      string `json:"customer"`
+	PreferredBank string `json:"preferred_bank,omitempty"`
+}
+
+type PaystackDedicatedBank struct {
+	Name string `json:"name"`
+	Slug string `json:"slug"`
+	ID   int64  `json:"id"`
+}
+
+type PaystackDedicatedAccountData struct {
+	ID            int64                  `json:"id"`
+	AccountName   string                 `json:"account_name"`
+	AccountNumber string                 `json:"account_number"`
+	Bank          PaystackDedicatedBank  `json:"bank"`
+	Customer      PaystackCustomerData   `json:"customer"`
+	Assignment    map[string]interface{} `json:"assignment"`
+}
+
+type CreateDedicatedAccountResponse struct {
+	Status  bool                         `json:"status"`
+	Message string                       `json:"message"`
+	Data    PaystackDedicatedAccountData `json:"data"`
+}
+
 type WithdrawalBody struct {
 	Amount      int64  `json:"amount" validate:"required,gt=0"`
 	Email       string `json:"email" validate:"required"`

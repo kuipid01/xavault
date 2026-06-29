@@ -13,6 +13,9 @@ type User struct {
 	PasswordResetToken          *string    `json:"password_reset_token"`
 	PasswordResetTokenExpiresAt *time.Time `json:"password_reset_token_expires_at"`
 	RefreshToken                *string    `json:"refresh_token"`
+	WithdrawalPinHash           *string    `json:"-"`
+	WithdrawalPinResetOTP       *string    `json:"-"`
+	WithdrawalPinResetExpiresAt *time.Time `json:"-"`
 	CreatedAt                   time.Time  `json:"created_at"`
 	UpdatedAt                   time.Time  `json:"updated_at"`
 }

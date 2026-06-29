@@ -3,14 +3,20 @@ package wallets
 import "time"
 
 type Wallet struct {
-	ID               string    `gorm:"type:uuid;primaryKey" json:"id"`
-	UserID           string    `gorm:"type:uuid;not null;uniqueIndex" json:"user_id"`
-	AvailableBalance int64     `gorm:"not null;default:0" json:"available_balance"`
-	LockedBalance    int64     `gorm:"not null;default:0" json:"locked_balance"`
-	LedgerBalance    int64     `gorm:"not null;default:0" json:"ledger_balance"`
-	Currency         string    `gorm:"not null;default:'NGN'" json:"currency"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID                     string    `gorm:"type:uuid;primaryKey" json:"id"`
+	UserID                 string    `gorm:"type:uuid;not null;uniqueIndex" json:"user_id"`
+	AvailableBalance       int64     `gorm:"not null;default:0" json:"available_balance"`
+	LockedBalance          int64     `gorm:"not null;default:0" json:"locked_balance"`
+	LedgerBalance          int64     `gorm:"not null;default:0" json:"ledger_balance"`
+	Currency               string    `gorm:"not null;default:'NGN'" json:"currency"`
+	PaystackCustomerCode   string    `gorm:"type:varchar(120)" json:"paystack_customer_code"`
+	DedicatedAccountID     string    `gorm:"type:varchar(80)" json:"dedicated_account_id"`
+	DedicatedAccountNumber string    `gorm:"type:varchar(20)" json:"dedicated_account_number"`
+	DedicatedAccountName   string    `gorm:"type:varchar(180)" json:"dedicated_account_name"`
+	DedicatedBankName      string    `gorm:"type:varchar(160)" json:"dedicated_bank_name"`
+	DedicatedBankSlug      string    `gorm:"type:varchar(80)" json:"dedicated_bank_slug"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
 }
 
 type WalletDeposit struct {

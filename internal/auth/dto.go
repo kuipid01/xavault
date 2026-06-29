@@ -33,3 +33,22 @@ type RefreshTokenRequest struct {
 type MeRequest struct {
 	UserID string `json:"user_id" validate:"required"`
 }
+
+type WithdrawalPinStatusRequest struct {
+	UserID string `json:"user_id" validate:"required"`
+}
+
+type SetWithdrawalPinRequest struct {
+	UserID string `json:"user_id" validate:"required"`
+	Pin    string `json:"pin" validate:"required"`
+}
+
+type ForgotWithdrawalPinRequest struct {
+	UserID string `json:"user_id" validate:"required"`
+}
+
+type ResetWithdrawalPinRequest struct {
+	UserID string `json:"user_id" validate:"required"`
+	OTP    string `json:"otp" validate:"required"`
+	Pin    string `json:"pin" validate:"required"`
+}

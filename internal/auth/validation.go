@@ -80,3 +80,33 @@ func validateResetPasswordData(req ResetPasswordRequest) map[string]string {
 	}
 	return nil
 }
+
+func validateWithdrawalPin(pin string) map[string]string {
+	pin = strings.TrimSpace(pin)
+	if len(pin) != 4 {
+		return map[string]string{"pin": "Withdrawal PIN must be 4 digits"}
+	}
+
+	for _, r := range pin {
+		if r < '0' || r > '9' {
+			return map[string]string{"pin": "Withdrawal PIN must contain only digits"}
+		}
+	}
+
+	return nil
+}
+
+func validateWithdrawalPinOTP(otp string) map[string]string {
+	otp = strings.TrimSpace(otp)
+	if len(otp) != 6 {
+		return map[string]string{"otp": "OTP must be 6 digits"}
+	}
+
+	for _, r := range otp {
+		if r < '0' || r > '9' {
+			return map[string]string{"otp": "OTP must contain only digits"}
+		}
+	}
+
+	return nil
+}

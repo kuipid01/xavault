@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	paymentproviders "github.com/kuipid01/salary-vault/internal/platform/payment-providers"
@@ -84,6 +85,84 @@ func (s *WalletService) CreateWallet(userId string) *response.APIResponse {
 	}
 
 }
+
+func (s *WalletService) EnsureDedicatedAccount(ctx context.Context, userID string, email string) *response.APIResponse {
+	wallet, err := s.repo.GetWalletByOwnerID(userID)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not fetch wallet",
+			Error:   err.Error(),
+		}
+	}
+
+	if wallet.DedicatedAccountNumber != "" {
+		return &response.APIResponse{
+			Success: true,
+			Message: "Dedicated account fetched successfully",
+			Data:    wallet,
+		}
+	}
+
+	customerCode := wallet.PaystackCustomerCode
+	if customerCode == "" {
+		firstName, lastName := namesFromEmail(email)
+		customer, err := s.payment.CreateCustomer(ctx, &paymentproviders.CreateCustomerBody{
+			Email:     email,
+			FirstName: firstName,
+			LastName:  lastName,
+		})
+		if err != nil {
+			return &response.APIResponse{
+				Success: false,
+				Message: "Could not create Paystack customer",
+				Error:   err.Error(),
+			}
+		}
+
+		customerCode = customer.Data.CustomerCode
+		wallet.PaystackCustomerCode = customerCode
+	}
+
+	preferredBank := strings.TrimSpace(os.Getenv("PAYSTACK_DEDICATED_ACCOUNT_BANK"))
+	if preferredBank == "" && strings.HasPrefix(os.Getenv("PAYSTACK_SECRET_KEY"), "sk_test") {
+		preferredBank = "test-bank"
+	}
+
+	dedicated, err := s.payment.CreateDedicatedAccount(ctx, &paymentproviders.CreateDedicatedAccountBody{
+		Customer:      customerCode,
+		PreferredBank: preferredBank,
+	})
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not create transfer account",
+			Error:   err.Error(),
+		}
+	}
+
+	wallet.DedicatedAccountID = fmt.Sprintf("%d", dedicated.Data.ID)
+	wallet.DedicatedAccountNumber = dedicated.Data.AccountNumber
+	wallet.DedicatedAccountName = dedicated.Data.AccountName
+	wallet.DedicatedBankName = dedicated.Data.Bank.Name
+	wallet.DedicatedBankSlug = dedicated.Data.Bank.Slug
+
+	updatedWallet, err := s.repo.Update(wallet)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not save transfer account",
+			Error:   err.Error(),
+		}
+	}
+
+	return &response.APIResponse{
+		Success: true,
+		Message: "Dedicated account created successfully",
+		Data:    updatedWallet,
+	}
+}
+
 func (s *WalletService) InitiateDeposit(
 	ctx context.Context,
 	idempotencyKey string,
@@ -169,6 +248,27 @@ func (s *WalletService) InitiateDeposit(
 	}
 }
 
+func namesFromEmail(email string) (string, string) {
+	local := strings.TrimSpace(strings.Split(email, "@")[0])
+	if local == "" {
+		return "Salary", "Vault"
+	}
+
+	parts := strings.FieldsFunc(local, func(r rune) bool {
+		return r == '.' || r == '_' || r == '-' || r == '+'
+	})
+
+	if len(parts) == 0 {
+		return local, "Vault"
+	}
+
+	if len(parts) == 1 {
+		return strings.Title(parts[0]), "Vault"
+	}
+
+	return strings.Title(parts[0]), strings.Title(parts[1])
+}
+
 func (s *WalletService) CreditWallet(reference string, webhookAmount int64) *response.APIResponse {
 	// 1. Validate incoming amount payload baseline
 	if webhookAmount <= 0 {
@@ -230,6 +330,7 @@ func (s *WalletService) CreditWallet(reference string, webhookAmount int64) *res
 			return err
 		}
 
+		balanceBefore := wallet.AvailableBalance
 		// C. Credit the mathematical balances safely
 		wallet.AvailableBalance += webhookAmount
 		wallet.LedgerBalance += webhookAmount
@@ -248,8 +349,8 @@ func (s *WalletService) CreditWallet(reference string, webhookAmount int64) *res
 			WalletID:      walletdeposit.WalletID,
 			Currency:      walletdeposit.Currency,
 			Type:          "credit",
-			BalanceBefore: wallet.AvailableBalance,
-			BalanceAfter:  wallet.AvailableBalance + webhookAmount,
+			BalanceBefore: balanceBefore,
+			BalanceAfter:  wallet.AvailableBalance,
 			Reference:     reference,
 			CreatedAt:     now,
 			Source:        "Paystack",
@@ -274,6 +375,103 @@ func (s *WalletService) CreditWallet(reference string, webhookAmount int64) *res
 		Success: true,
 		Message: "Wallet credited successfully",
 		Data:    walletdeposit,
+	}
+}
+
+func (s *WalletService) CreditDedicatedAccountTransfer(reference string, webhookAmount int64, accountNumber string) *response.APIResponse {
+	if webhookAmount <= 0 {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Invalid amount passed",
+			Error:   "amount_must_be_greater_than_zero",
+		}
+	}
+
+	existingDeposit, err := s.repo.GetDepositByReference(reference)
+	if err == nil && existingDeposit != nil {
+		if existingDeposit.Status == "success" {
+			return &response.APIResponse{
+				Success: false,
+				Message: "Deposit has already been processed",
+				Error:   "deposit_already_processed",
+			}
+		}
+
+		return s.CreditWallet(reference, webhookAmount)
+	}
+
+	wallet, err := s.repo.GetWalletByDedicatedAccountNumber(accountNumber)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Dedicated account wallet not found",
+			Error:   err.Error(),
+		}
+	}
+
+	now := time.Now()
+	deposit := &WalletDeposit{
+		ID:        security.GenateUniqueID(),
+		UserID:    wallet.UserID,
+		WalletID:  wallet.ID,
+		Reference: reference,
+		Amount:    webhookAmount,
+		Currency:  wallet.Currency,
+		Status:    "success",
+		Provider:  "paystack_dedicated_account",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	err = s.repo.ExecuteInTransaction(func(txRepo *WalletRepository) error {
+		if _, err := txRepo.CreateDeposit(deposit); err != nil {
+			return err
+		}
+
+		wallet, err := txRepo.GetWalletByDedicatedAccountNumber(accountNumber)
+		if err != nil {
+			return err
+		}
+
+		balanceBefore := wallet.AvailableBalance
+		wallet.AvailableBalance += webhookAmount
+		wallet.LedgerBalance += webhookAmount
+
+		if _, err := txRepo.Update(wallet); err != nil {
+			return err
+		}
+
+		ledger := &WalletLedger{
+			ID:            security.GenateUniqueID(),
+			Amount:        webhookAmount,
+			UserID:        wallet.UserID,
+			WalletID:      wallet.ID,
+			Currency:      wallet.Currency,
+			Type:          "credit",
+			BalanceBefore: balanceBefore,
+			BalanceAfter:  wallet.AvailableBalance,
+			Reference:     reference,
+			CreatedAt:     now,
+			Source:        "Paystack Dedicated Account",
+			SourceID:      deposit.ID,
+			Description:   "Deposit by bank transfer",
+		}
+
+		_, err = txRepo.LogWalletLedger(ledger)
+		return err
+	})
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Failed to credit dedicated account transfer",
+			Error:   err.Error(),
+		}
+	}
+
+	return &response.APIResponse{
+		Success: true,
+		Message: "Dedicated account transfer credited successfully",
+		Data:    deposit,
 	}
 }
 

@@ -56,6 +56,11 @@ func Protected(jwtSecret string) fiber.Handler {
 			return response.Error(c, fiber.StatusUnauthorized, "Invalid user ID in token", "invalid_user_id")
 		}
 
+		tokenType, ok := claims["type"].(string)
+		if !ok || tokenType != "access" {
+			return response.Error(c, fiber.StatusUnauthorized, "Invalid token type", "invalid_token_type")
+		}
+
 		email, _ := claims["email"].(string)
 
 		c.Locals("user_id", userID)

@@ -11,6 +11,7 @@ func RegisterWalletRoutes(v1 fiber.Router, h *WalletHandler) {
 	wallet := v1.Group("/wallet", middleware.Protected(os.Getenv("JWT_ACCESS_SECRET")))
 
 	wallet.Get("/", h.GetMyWallet)
+	wallet.Post("/dedicated-account", h.EnsureDedicatedAccount)
 	wallet.Post("/deposit/initiate", h.InitiateDeposit)
 	wallet.Get("/deposits", h.GetAllDeposits)
 	wallet.Get("/deposit/:reference", h.GetDepositByReference)

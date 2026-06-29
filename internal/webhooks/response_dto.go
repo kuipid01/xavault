@@ -16,4 +16,7 @@ type ChargeSuccessData struct {
 	Customer  struct {
 		Email string `json:"email"`
 	} `json:"customer"`
+	DedicatedAccount struct {
+		AccountNumber string `json:"account_number"`
+	} `json:"dedicated_account"`
 }

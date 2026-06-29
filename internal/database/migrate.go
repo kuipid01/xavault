@@ -3,6 +3,7 @@ package database
 import (
 	"log"
 
+	bankaccounts "github.com/kuipid01/salary-vault/internal/bank_accounts"
 	"github.com/kuipid01/salary-vault/internal/envelope"
 	client "github.com/kuipid01/salary-vault/internal/shared/client/idempotence"
 	spendingplans "github.com/kuipid01/salary-vault/internal/spending_plans"
@@ -23,6 +24,7 @@ func RunMigrations(db *gorm.DB) {
 		&wallets.WalletLedger{},
 		&spendingplans.SpendingPlan{},
 		&envelope.Envelope{},
+		&bankaccounts.BankAccount{},
 		&withdrawals.Withdrawal{},
 		&waitlist.Entry{},
 	)
@@ -41,6 +43,7 @@ func ClearDatabase(db *gorm.DB) {
 		&wallets.WalletDeposit{},
 		&client.IdempotentKey{},
 		&wallets.WalletLedger{},
+		&bankaccounts.BankAccount{},
 	)
 
 	if err != nil {

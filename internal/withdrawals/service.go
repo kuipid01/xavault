@@ -7,13 +7,16 @@ import (
 	"strings"
 	"time"
 
+	bankaccounts "github.com/kuipid01/salary-vault/internal/bank_accounts"
 	"github.com/kuipid01/salary-vault/internal/envelope"
 	paymentproviders "github.com/kuipid01/salary-vault/internal/platform/payment-providers"
 	client "github.com/kuipid01/salary-vault/internal/shared/client/idempotence"
 	"github.com/kuipid01/salary-vault/internal/shared/response"
 	"github.com/kuipid01/salary-vault/internal/shared/security"
 	spendingplans "github.com/kuipid01/salary-vault/internal/spending_plans"
+	"github.com/kuipid01/salary-vault/internal/users"
 	"github.com/kuipid01/salary-vault/internal/wallets"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
 
@@ -22,6 +25,8 @@ type WithdrawalService struct {
 	planRepo           *spendingplans.PlanRepository
 	envelopeRepo       *envelope.EnvelopeRepo
 	walletRepo         *wallets.WalletRepository
+	bankAccountRepo    *bankaccounts.Repository
+	userRepo           *users.UserRepository
 	payment            paymentproviders.PaymentProvider
 	idempotencyManager *client.IdempotentRequest
 }
@@ -31,6 +36,8 @@ func NewWithdrawalService(
 	planRepo *spendingplans.PlanRepository,
 	envelopeRepo *envelope.EnvelopeRepo,
 	walletRepo *wallets.WalletRepository,
+	bankAccountRepo *bankaccounts.Repository,
+	userRepo *users.UserRepository,
 	payment paymentproviders.PaymentProvider,
 	idempotencyManager *client.IdempotentRequest,
 ) *WithdrawalService {
@@ -39,6 +46,8 @@ func NewWithdrawalService(
 		planRepo:           planRepo,
 		envelopeRepo:       envelopeRepo,
 		walletRepo:         walletRepo,
+		bankAccountRepo:    bankAccountRepo,
+		userRepo:           userRepo,
 		payment:            payment,
 		idempotencyManager: idempotencyManager,
 	}
@@ -84,7 +93,7 @@ func (s *WithdrawalService) PreviewWithdrawal(
 		}
 	}
 
-	if plan.Status != spendingplans.PlanStatusActive {
+	if !isPlanWithdrawableStatus(plan.Status) {
 		return &response.APIResponse{
 			Success: false,
 			Message: "Spending plan is not active",
@@ -141,7 +150,9 @@ func (s *WithdrawalService) RequestWithdrawal(
 
 	req.SourceType = strings.TrimSpace(req.SourceType)
 	req.Reason = strings.TrimSpace(req.Reason)
-	req.RecipientCode = strings.TrimSpace(req.RecipientCode)
+	req.DestinationType = strings.TrimSpace(req.DestinationType)
+	req.DestinationID = strings.TrimSpace(req.DestinationID)
+	req.WithdrawalPin = strings.TrimSpace(req.WithdrawalPin)
 
 	validationErrors := validateRequestWithdrawalRequest(req)
 	if len(validationErrors) > 0 {
@@ -152,13 +163,20 @@ func (s *WithdrawalService) RequestWithdrawal(
 		}
 	}
 
-	if req.RecipientCode == "" {
+	if err := s.verifyWithdrawalPin(userID, req.WithdrawalPin); err != nil {
 		return &response.APIResponse{
 			Success: false,
-			Message: "Recipient code is required",
-			Error: map[string]string{
-				"recipient_code": "Recipient code is required for Paystack transfer",
-			},
+			Message: "Invalid withdrawal PIN",
+			Error:   err,
+		}
+	}
+
+	recipientCode, err := s.resolveWithdrawalRecipient(userID, req)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Invalid withdrawal destination",
+			Error:   err.Error(),
 		}
 	}
 
@@ -186,7 +204,7 @@ func (s *WithdrawalService) RequestWithdrawal(
 			// 2. Lock the spending plan row.
 			// 3. Validate plan status and policy.
 			// 4. Calculate withdrawable amount using locked DB state.
-			// 5. Move amount from wallet available balance to locked balance.
+			// 5. Verify the plan's locked wallet balance can cover the withdrawal.
 			// 6. Create withdrawal record with pending status.
 			// 7. Create withdrawal hold ledger.
 			// 8. Commit transaction before calling Paystack.
@@ -200,7 +218,7 @@ func (s *WithdrawalService) RequestWithdrawal(
 					return ErrPlanNotFound
 				}
 
-				if plan.Status != spendingplans.PlanStatusActive {
+				if !isPlanWithdrawableStatus(plan.Status) {
 					return ErrPlanNotActive
 				}
 
@@ -247,11 +265,10 @@ func (s *WithdrawalService) RequestWithdrawal(
 					return ErrPendingWithdrawalExists
 				}
 
-				// Critical money movement:
-				// This must lock the wallet row and move:
-				// available_balance -= req.Amount
-				// locked_balance += req.Amount
-				updatedWallet, err = s.walletRepo.HoldFundsForWithdrawalTx(
+				// Critical money check:
+				// Confirmed spending plan funds already live in locked_balance.
+				// Keep balances unchanged until Paystack confirms transfer success.
+				updatedWallet, err = s.walletRepo.VerifyLockedFundsForWithdrawalTx(
 					tx,
 					userID,
 					plan.WalletID,
@@ -279,7 +296,9 @@ func (s *WithdrawalService) RequestWithdrawal(
 
 					Provider:            paymentproviders.Paystack,
 					ProviderStatus:      "local_pending",
-					RecipientCode:       req.RecipientCode,
+					RecipientCode:       recipientCode,
+					DestinationType:     req.DestinationType,
+					DestinationID:       req.DestinationID,
 					IdempotencyKey:      idempotencyKey,
 					RequestedAt:         &now,
 					TransferInitiatedAt: nil,
@@ -333,7 +352,7 @@ func (s *WithdrawalService) RequestWithdrawal(
 			paystackReq := &paymentproviders.InitiateTransferBody{
 				Source:    "balance",
 				Amount:    amountForPaystack,
-				Recipient: req.RecipientCode,
+				Recipient: recipientCode,
 				Reason:    transferReason,
 				Reference: createdWithdrawal.Reference,
 			}
@@ -342,8 +361,8 @@ func (s *WithdrawalService) RequestWithdrawal(
 			if err != nil {
 				// Data flow:
 				// Paystack initiation failed.
-				// Reverse the local fund hold so user is not stuck.
-				reversalErr := s.reverseFailedWithdrawalHold(
+				// No wallet balance was moved locally, so only mark the request failed.
+				reversalErr := s.markFailedWithdrawalInitiation(
 					createdWithdrawal.ID,
 					userID,
 					createdWithdrawal.WalletID,
@@ -418,7 +437,7 @@ func (s *WithdrawalService) RequestWithdrawal(
 	}
 }
 
-func (s *WithdrawalService) reverseFailedWithdrawalHold(
+func (s *WithdrawalService) markFailedWithdrawalInitiation(
 	withdrawalID string,
 	userID string,
 	walletID string,
@@ -432,22 +451,9 @@ func (s *WithdrawalService) reverseFailedWithdrawalHold(
 	return s.repo.WithTransaction(func(tx *gorm.DB) error {
 		// Data flow:
 		// 1. Paystack failed before final transfer processing.
-		// 2. Release locked withdrawal funds back to available balance.
-		// 3. Mark withdrawal as failed.
-		// 4. Write reversal ledger.
-		updatedWallet, err := s.walletRepo.ReleaseWithdrawalHoldTx(
-			tx,
-			userID,
-			walletID,
-			amount,
-		)
-		if err != nil {
-			return err
-		}
-
-		_ = updatedWallet
-
-		err = s.repo.MarkFailedWithTx(tx, withdrawalID, reason)
+		// 2. Mark withdrawal as failed.
+		// 3. Write a ledger event for auditability; balances do not change.
+		err := s.repo.MarkFailedWithTx(tx, withdrawalID, reason)
 		if err != nil {
 			return err
 		}
@@ -591,7 +597,7 @@ func (s *WithdrawalService) calculateWithdrawalPreviewTx(
 		return nil, ErrPlanNotFound
 	}
 
-	if plan.Status != spendingplans.PlanStatusActive {
+	if !isPlanWithdrawableStatus(plan.Status) {
 		return nil, ErrPlanNotActive
 	}
 
@@ -767,6 +773,12 @@ func validatePreviewWithdrawalRequest(req PreviewWithdrawalRequest) map[string]s
 	return errors
 }
 
+func isPlanWithdrawableStatus(status string) bool {
+	return status == spendingplans.PlanStatusActive ||
+		status == spendingplans.PlanStatusExpired ||
+		status == spendingplans.PlanStatusCompleted
+}
+
 func validateRequestWithdrawalRequest(req RequestWithdrawalRequest) map[string]string {
 	errors := map[string]string{}
 
@@ -784,7 +796,86 @@ func validateRequestWithdrawalRequest(req RequestWithdrawalRequest) map[string]s
 		errors["reason"] = "Reason cannot be more than 255 characters"
 	}
 
+	destinationType := strings.TrimSpace(req.DestinationType)
+	if destinationType == "" {
+		errors["destination_type"] = "Destination type is required"
+	}
+
+	if destinationType != "" &&
+		destinationType != WithdrawalDestinationAccount &&
+		destinationType != WithdrawalDestinationBeneficiary {
+		errors["destination_type"] = "Invalid destination type"
+	}
+
+	if strings.TrimSpace(req.DestinationID) == "" {
+		errors["destination_id"] = "Destination ID is required"
+	}
+
+	if pinErrors := validateWithdrawalPinFormat(req.WithdrawalPin); len(pinErrors) > 0 {
+		for key, value := range pinErrors {
+			errors[key] = value
+		}
+	}
+
 	return errors
+}
+
+func validateWithdrawalPinFormat(pin string) map[string]string {
+	errors := map[string]string{}
+	pin = strings.TrimSpace(pin)
+
+	if len(pin) != 4 {
+		errors["withdrawal_pin"] = "Withdrawal PIN must be 4 digits"
+		return errors
+	}
+
+	for _, r := range pin {
+		if r < '0' || r > '9' {
+			errors["withdrawal_pin"] = "Withdrawal PIN must contain only digits"
+			return errors
+		}
+	}
+
+	return errors
+}
+
+func (s *WithdrawalService) verifyWithdrawalPin(userID string, pin string) error {
+	user, err := s.userRepo.FindById(userID)
+	if err != nil {
+		return err
+	}
+
+	if user == nil || user.WithdrawalPinHash == nil || strings.TrimSpace(*user.WithdrawalPinHash) == "" {
+		return ErrWithdrawalPinNotSet
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(*user.WithdrawalPinHash), []byte(pin)); err != nil {
+		return ErrInvalidWithdrawalPin
+	}
+
+	return nil
+}
+
+func (s *WithdrawalService) resolveWithdrawalRecipient(userID string, req RequestWithdrawalRequest) (string, error) {
+	ownerType := bankaccounts.AccountOwnerTypeSelf
+	if req.DestinationType == WithdrawalDestinationBeneficiary {
+		ownerType = bankaccounts.AccountOwnerTypeBeneficiary
+	}
+
+	account, err := s.bankAccountRepo.FindByIDAndUserID(req.DestinationID, userID)
+	if err != nil {
+		return "", err
+	}
+
+	if account == nil || account.OwnerType != ownerType {
+		return "", ErrInvalidWithdrawalDestination
+	}
+
+	if account.RecipientCode == "" {
+		return "", ErrInvalidWithdrawalDestination
+	}
+
+	return account.RecipientCode, nil
 }
 
 func normalizeOptionalString(value *string) *string {
@@ -885,6 +976,30 @@ func withdrawalErrorResponse(message string, err error) *response.APIResponse {
 		return &response.APIResponse{
 			Success: false,
 			Message: "Wallet not found",
+			Error:   err,
+		}
+	}
+
+	if err == ErrInvalidWithdrawalDestination {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Invalid withdrawal destination",
+			Error:   err,
+		}
+	}
+
+	if err == ErrWithdrawalPinNotSet {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Set your withdrawal PIN before withdrawing",
+			Error:   err,
+		}
+	}
+
+	if err == ErrInvalidWithdrawalPin {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Invalid withdrawal PIN",
 			Error:   err,
 		}
 	}

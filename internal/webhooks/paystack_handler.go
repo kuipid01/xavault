@@ -68,7 +68,15 @@ func (h *WebhookHandler) ExtractAndProcessEvent(bodyText string) error {
 
 		// Hand off to your business handlers smoothly
 		fmt.Printf("🎉 Deposit verified! Ref: %s, Amount: %d kobo", chargeData.Reference, chargeData.Amount)
-		h.walletService.CreditWallet(chargeData.Reference, chargeData.Amount)
+		if chargeData.DedicatedAccount.AccountNumber != "" {
+			h.walletService.CreditDedicatedAccountTransfer(
+				chargeData.Reference,
+				chargeData.Amount,
+				chargeData.DedicatedAccount.AccountNumber,
+			)
+		} else {
+			h.walletService.CreditWallet(chargeData.Reference, chargeData.Amount)
+		}
 
 	case "transfer.reversed":
 		// Handle transfer reversals here...

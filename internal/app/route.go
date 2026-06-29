@@ -3,6 +3,7 @@ package app
 import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/kuipid01/salary-vault/internal/auth"
+	bankaccounts "github.com/kuipid01/salary-vault/internal/bank_accounts"
 	"github.com/kuipid01/salary-vault/internal/config"
 	"github.com/kuipid01/salary-vault/internal/envelope"
 	"github.com/kuipid01/salary-vault/internal/shared/response"
@@ -30,6 +31,7 @@ func RegisterRoutes(app *fiber.App, cfg *config.Config, container *Container) {
 	webhooks.RegisterWebhooksRoutes(v1, container.WebhookHND)
 	spendingplans.RegisterPlanRoutes(v1, container.PlansHND)
 	envelope.RegisterEnvelopeRoutes(v1, container.EnvelopHND)
+	bankaccounts.RegisterRoutes(v1, container.BankAccounts.Hnd)
 	withdrawals.NewWithdrawalRoute(v1, container.WithdrawalModule.Hnd)
 	waitlist.RegisterRoutes(v1, container.Waitlist.Hnd)
 	v1.Get("/", func(c *fiber.Ctx) error {

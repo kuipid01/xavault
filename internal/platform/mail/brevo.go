@@ -155,3 +155,31 @@ func (b *BrevoMailer) SendForgetPasswordMail(email, resetPasswordURL string) err
 
 	return err
 }
+
+func (b *BrevoMailer) SendWithdrawalPinOTP(email string, otp string) error {
+	data := struct {
+		Name          string
+		AppName       string
+		OTP           string
+		ExpiryMinutes int
+	}{
+		Name:          "",
+		AppName:       "Salary Vault",
+		OTP:           otp,
+		ExpiryMinutes: 10,
+	}
+
+	htmlContent, err := RenderEmailTemplate("withdrawal_pin_otp.html", data)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	return b.sendHTMLMail(
+		email,
+		"",
+		"Reset Your Withdrawal PIN",
+		htmlContent,
+		nil,
+	)
+}

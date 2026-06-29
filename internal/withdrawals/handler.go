@@ -137,6 +137,15 @@ func getWithdrawalStatusCode(err interface{}) int {
 	case ErrEnvelopeNotAllowed:
 		return fiber.StatusBadRequest
 
+	case ErrInvalidWithdrawalDestination:
+		return fiber.StatusBadRequest
+
+	case ErrWithdrawalPinNotSet:
+		return fiber.StatusForbidden
+
+	case ErrInvalidWithdrawalPin:
+		return fiber.StatusUnauthorized
+
 	default:
 		return fiber.StatusBadRequest
 	}

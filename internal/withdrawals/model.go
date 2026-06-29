@@ -20,6 +20,9 @@ const (
 	WithdrawalStatusSuccess    = "success"
 
 	WithdrawalStatusRejected = "rejected"
+
+	WithdrawalDestinationAccount     = "account"
+	WithdrawalDestinationBeneficiary = "beneficiary"
 )
 
 type Withdrawal struct {
@@ -58,8 +61,10 @@ type Withdrawal struct {
 	ProviderTransferCode string
 	ProviderResponseJSON string
 
-	RecipientCode  string
-	IdempotencyKey string
+	RecipientCode   string
+	DestinationType string
+	DestinationID   string
+	IdempotencyKey  string
 
 	FailureReason string
 }

@@ -23,6 +23,10 @@ func RegisterAuthRoutes(v1 fiber.Router, h *AuthHandler) {
 	auth.Use(middleware.Protected(os.Getenv("JWT_ACCESS_SECRET")))
 
 	auth.Get("/me", h.Me)
+	auth.Get("/withdrawal-pin/status", h.WithdrawalPinStatus)
+	auth.Post("/withdrawal-pin", h.SetWithdrawalPin)
+	auth.Post("/withdrawal-pin/forgot", h.ForgotWithdrawalPin)
+	auth.Post("/withdrawal-pin/reset", h.ResetWithdrawalPin)
 
 	auth.Post("/resend-verification-mail", h.ResendVerificationMail)
 	auth.Post("/change-password", h.ChangePassword)

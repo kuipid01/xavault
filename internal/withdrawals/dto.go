@@ -7,12 +7,14 @@ type PreviewWithdrawalRequest struct {
 }
 
 type RequestWithdrawalRequest struct {
-	SourceType     string  `json:"source_type"`
-	EnvelopeID     *string `json:"envelope_id"`
-	Amount         int64   `json:"amount"`
-	Reason         string  `json:"reason"`
-	IdempotencyKey string  `json:"idempotency_key" validate:"required"`
-	RecipientCode  string  `json:"recipient_code"`
+	SourceType      string  `json:"source_type"`
+	EnvelopeID      *string `json:"envelope_id"`
+	Amount          int64   `json:"amount"`
+	Reason          string  `json:"reason"`
+	IdempotencyKey  string  `json:"idempotency_key" validate:"required"`
+	DestinationType string  `json:"destination_type"`
+	DestinationID   string  `json:"destination_id"`
+	WithdrawalPin   string  `json:"withdrawal_pin"`
 }
 
 type WithdrawalResponse struct {
