@@ -20,8 +20,9 @@ func NewTokenService() *TokenService {
 }
 
 type AccessTokenClaims struct {
-	UserID string `json:"user_id"`
-	Email  string `json:"email"`
+	UserID    string `json:"user_id"`
+	Email     string `json:"email"`
+	TokenType string `json:"type"`
 	jwt.RegisteredClaims
 }
 
@@ -37,8 +38,9 @@ func (t *TokenService) GenerateAccessToken(userID string, email string, tokenTyp
 		expireAt = now.Add(AuthTimeAccess * time.Minute)
 	}
 	claims := AccessTokenClaims{
-		UserID: userID,
-		Email:  email,
+		UserID:    userID,
+		Email:     email,
+		TokenType: tokenType,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID,
 			Issuer:    t.Issuer,
@@ -50,4 +52,29 @@ func (t *TokenService) GenerateAccessToken(userID string, email string, tokenTyp
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 
 	return token.SignedString(t.AccessSecret)
+}
+
+func (t *TokenService) ValidateToken(tokenString string, expectedType string) (*AccessTokenClaims, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &AccessTokenClaims{}, func(token *jwt.Token) (interface{}, error) {
+		if token.Method != jwt.SigningMethodHS256 {
+			return nil, jwt.ErrTokenSignatureInvalid
+		}
+
+		return t.AccessSecret, nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	claims, ok := token.Claims.(*AccessTokenClaims)
+	if !ok || !token.Valid {
+		return nil, jwt.ErrTokenInvalidClaims
+	}
+
+	if expectedType != "" && claims.TokenType != expectedType {
+		return nil, jwt.ErrTokenInvalidClaims
+	}
+
+	return claims, nil
 }

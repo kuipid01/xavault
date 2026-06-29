@@ -158,6 +158,14 @@ func (s *AuthService) Login(req LoginRequest) *response.APIResponse {
 		}
 	}
 
+	if err := s.repository.UpdateRefreshToken(user.ID, refreshToken); err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not save refresh token",
+			Error:   err.Error(),
+		}
+	}
+
 	return &response.APIResponse{
 		Success: true,
 		Message: "Login successful",
@@ -175,7 +183,46 @@ func (s *AuthService) Login(req LoginRequest) *response.APIResponse {
 }
 
 func (s *AuthService) ValidateMail(req ValidateMailRequest) *response.APIResponse {
-	return s.VerifyEmail(req.Token)
+	req.Token = strings.TrimSpace(req.Token)
+	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
+
+	if req.Token != "" {
+		return s.VerifyEmail(req.Token)
+	}
+
+	if req.Email == "" {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Email or token is required",
+			Error:   "email_or_token_required",
+		}
+	}
+
+	user, err := s.repository.FindByEmail(req.Email)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not check email verification",
+			Error:   err.Error(),
+		}
+	}
+
+	if user == nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "User not found",
+			Error:   "user_not_found",
+		}
+	}
+
+	return &response.APIResponse{
+		Success: true,
+		Message: "Email verification status fetched",
+		Data: fiber.Map{
+			"email":         user.Email,
+			"mail_verified": user.MailVerified,
+		},
+	}
 }
 
 func (s *AuthService) ForgetPassword(req ForgetPasswordRequest) *response.APIResponse {
@@ -353,6 +400,15 @@ func (s *AuthService) RefreshToken(req RefreshTokenRequest) *response.APIRespons
 		}
 	}
 
+	claims, err := s.tokenService.ValidateToken(req.RefreshToken, TokenTypeRefresh)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Invalid refresh token",
+			Error:   "invalid_refresh_token",
+		}
+	}
+
 	user, err := s.repository.GetUserWithToken(req.RefreshToken)
 	if err != nil {
 		return &response.APIResponse{
@@ -362,7 +418,7 @@ func (s *AuthService) RefreshToken(req RefreshTokenRequest) *response.APIRespons
 		}
 	}
 
-	if user == nil {
+	if user == nil || user.ID != claims.UserID {
 		return &response.APIResponse{
 			Success: false,
 			Message: "Invalid refresh token",

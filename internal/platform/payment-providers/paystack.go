@@ -30,7 +30,7 @@ func (p *PaystackProvider) InitiateDeposit(ctx context.Context, data *DepositBod
 		"Authorization": "Bearer " + p.apiKey,
 	}
 
-	// 4. Properly initialize the target map so it's not nil
+	// 4. Properly initialize the target mad and p so it's not nil
 	respTarget := make(map[string]interface{})
 
 	// 5. Pass data directly (no manual json.Marshal here)

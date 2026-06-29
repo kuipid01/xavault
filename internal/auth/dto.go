@@ -7,7 +7,8 @@ type RegisterRequest struct {
 }
 
 type ValidateMailRequest struct {
-	Token string `json:"token" validate:"required"`
+	Token string `json:"token"`
+	Email string `json:"email"`
 }
 
 type LoginRequest struct {

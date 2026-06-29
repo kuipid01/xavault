@@ -139,10 +139,21 @@ func (h *AuthHandler) RefreshToken(c *fiber.Ctx) error {
 		return response.Error(c, fiber.StatusBadRequest, "Invalid request", err)
 	}
 
+	if req.RefreshToken == "" {
+		req.RefreshToken = c.Cookies("refresh_token")
+	}
+
 	result := h.authService.RefreshToken(req)
 
 	if result.Error != nil {
 		return response.Error(c, fiber.StatusBadRequest, result.Message, result.Error)
+	}
+
+	if result.Data != nil {
+		dataMap := result.Data.(fiber.Map)
+		accessToken := dataMap["access_token"].(string)
+		refreshToken := dataMap["refresh_token"].(string)
+		SetAuthCookies(c, accessToken, refreshToken)
 	}
 
 	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
