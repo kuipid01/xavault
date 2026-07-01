@@ -374,8 +374,55 @@ func (s *AuthService) Logout(req ResetPasswordRequest) *response.APIResponse {
 
 }
 
-func (s *AuthService) ResendVerificationMail(req ResetPasswordRequest) *response.APIResponse {
-	return nil
+func (s *AuthService) ResendVerificationMail(req ResendVerificationMailRequest) *response.APIResponse {
+	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
+
+	if req.Email == "" {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Email is required",
+			Error:   "email_required",
+		}
+	}
+
+	user, err := s.repository.FindByEmail(req.Email)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not check email verification",
+			Error:   err.Error(),
+		}
+	}
+
+	if user == nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "User not found",
+			Error:   "user_not_found",
+		}
+	}
+
+	if user.MailVerified {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Email is already verified",
+			Error:   "email_already_verified",
+		}
+	}
+
+	_, err = s.userVerificationFlow(user.Email, "register")
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not send verification email",
+			Error:   err.Error(),
+		}
+	}
+
+	return &response.APIResponse{
+		Success: true,
+		Message: "Verification email resent successfully",
+	}
 }
 
 func (s *AuthService) Me(req MeRequest) *response.APIResponse {

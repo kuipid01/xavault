@@ -15,6 +15,7 @@ func RegisterAuthRoutes(v1 fiber.Router, h *AuthHandler) {
 	auth.Post("/logout", h.Logout)
 
 	auth.Post("/validate-mail", h.ValidateMail)
+	auth.Post("/resend-verification-mail", h.ResendVerificationMail)
 
 	auth.Post("/forget-password", h.ForgetPassword)
 	auth.Post("/reset-password", h.ResetPassword)
@@ -28,6 +29,5 @@ func RegisterAuthRoutes(v1 fiber.Router, h *AuthHandler) {
 	auth.Post("/withdrawal-pin/forgot", h.ForgotWithdrawalPin)
 	auth.Post("/withdrawal-pin/reset", h.ResetWithdrawalPin)
 
-	auth.Post("/resend-verification-mail", h.ResendVerificationMail)
 	auth.Post("/change-password", h.ChangePassword)
 }

@@ -160,7 +160,7 @@ func (h *AuthHandler) RefreshToken(c *fiber.Ctx) error {
 }
 
 func (h *AuthHandler) ResendVerificationMail(c *fiber.Ctx) error {
-	var req ResetPasswordRequest
+	var req ResendVerificationMailRequest
 
 	if err := c.BodyParser(&req); err != nil {
 		return response.Error(c, fiber.StatusBadRequest, "Invalid request", err)
