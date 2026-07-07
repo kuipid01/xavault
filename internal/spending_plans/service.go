@@ -5,8 +5,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/kuipid01/salary-vault/internal/shared/response"
 	"github.com/kuipid01/salary-vault/internal/shared/security"
+	"github.com/kuipid01/salary-vault/internal/subscription"
 	"github.com/kuipid01/salary-vault/internal/wallets"
 	"gorm.io/gorm"
 )
@@ -15,10 +17,21 @@ type PlanService struct {
 	repository     *PlanRepository
 	walletRepo     *wallets.WalletRepository
 	envelopeReader EnvelopeAllocationReader
+	subRepo        *subscription.SubscriptionRepository
 }
 
-func NewPlanService(r *PlanRepository, walletRepo *wallets.WalletRepository, envelopeReader EnvelopeAllocationReader) *PlanService {
-	return &PlanService{repository: r, walletRepo: walletRepo, envelopeReader: envelopeReader}
+func NewPlanService(
+	r *PlanRepository,
+	walletRepo *wallets.WalletRepository,
+	envelopeReader EnvelopeAllocationReader,
+	subRepo *subscription.SubscriptionRepository,
+) *PlanService {
+	return &PlanService{
+		repository:     r,
+		walletRepo:     walletRepo,
+		envelopeReader: envelopeReader,
+		subRepo:        subRepo,
+	}
 }
 
 func (s *PlanService) CreateDraftPlan(userID string, req CreatePlanRequest) *response.APIResponse {
@@ -78,6 +91,28 @@ func (s *PlanService) CreateDraftPlan(userID string, req CreatePlanRequest) *res
 			Error: map[string]string{
 				"end_date": "End date must be after start date",
 			},
+		}
+	}
+
+	userUUID, err := uuid.Parse(userID)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Invalid user ID format",
+			Error:   "invalid_user_id",
+		}
+	}
+
+	containerType := subscription.ContainerLocked
+	if req.UnboxedBalancePolicy == PlanUnboxedPolicyFlexible {
+		containerType = subscription.ContainerFlexible
+	}
+
+	if err := s.subRepo.CanCreateContainer(userUUID, containerType); err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Subscription limit reached",
+			Error:   err.Error(),
 		}
 	}
 

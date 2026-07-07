@@ -10,17 +10,27 @@ import (
 	"os"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/kuipid01/salary-vault/internal/subscription"
 	"github.com/kuipid01/salary-vault/internal/wallets"
 	"github.com/kuipid01/salary-vault/internal/withdrawals"
 )
 
 type WebhookHandler struct {
-	walletService     *wallets.WalletService
-	withdrawalService *withdrawals.WithdrawalService
+	walletService       *wallets.WalletService
+	withdrawalService   *withdrawals.WithdrawalService
+	subscriptionService *subscription.SubscriptionService
 }
 
-func NewWebhookHandler(ws *wallets.WalletService, withdrawalService *withdrawals.WithdrawalService) *WebhookHandler {
-	return &WebhookHandler{walletService: ws, withdrawalService: withdrawalService}
+func NewWebhookHandler(
+	ws *wallets.WalletService,
+	withdrawalService *withdrawals.WithdrawalService,
+	subscriptionService *subscription.SubscriptionService,
+) *WebhookHandler {
+	return &WebhookHandler{
+		walletService:       ws,
+		withdrawalService:   withdrawalService,
+		subscriptionService: subscriptionService,
+	}
 }
 
 // PaystackWebhook handles all events from Paystack in one place
@@ -69,7 +79,22 @@ func (h *WebhookHandler) ExtractAndProcessEvent(bodyText string) error {
 		}
 
 		// Hand off to your business handlers smoothly
-		fmt.Printf("🎉 Deposit verified! Ref: %s, Amount: %d kobo", chargeData.Reference, chargeData.Amount)
+		fmt.Printf("🎉 Deposit verified! Ref: %s, Amount: %d kobo\n", chargeData.Reference, chargeData.Amount)
+		
+		if chargeData.Metadata.IsSubscription {
+			err := h.subscriptionService.ActivateSubscription(
+				chargeData.Metadata.UserID,
+				chargeData.Metadata.PlanID,
+				chargeData.Reference,
+			)
+			if err != nil {
+				log.Printf("❌ Failed to activate subscription: %v\n", err)
+			} else {
+				log.Printf("✅ Subscription activated for user %s\n", chargeData.Metadata.UserID)
+			}
+			return nil
+		}
+		
 		if chargeData.DedicatedAccount.AccountNumber != "" {
 			h.walletService.CreditDedicatedAccountTransfer(
 				chargeData.Reference,

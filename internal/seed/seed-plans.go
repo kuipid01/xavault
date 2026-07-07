@@ -1,6 +1,8 @@
 package seed
 
 import (
+	"log"
+
 	"github.com/kuipid01/salary-vault/internal/subscription"
 	"gorm.io/gorm"
 )
@@ -68,4 +70,10 @@ func SeedPlans(db *gorm.DB) error {
 	}
 
 	return nil
+}
+func Init(db *gorm.DB) {
+
+	if err := SeedPlans(db); err != nil {
+		log.Fatal(err)
+	}
 }

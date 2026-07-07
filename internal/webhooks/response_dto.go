@@ -8,7 +8,6 @@ type EventEnvelope struct {
 	Data  json.RawMessage `json:"data"` // Keeps the nested data as unparsed raw bytes
 }
 
-// ChargeSuccessData represents the structural payload for a successful deposit
 type ChargeSuccessData struct {
 	Amount    int64  `json:"amount"`
 	Reference string `json:"reference"`
@@ -19,6 +18,11 @@ type ChargeSuccessData struct {
 	DedicatedAccount struct {
 		AccountNumber string `json:"account_number"`
 	} `json:"dedicated_account"`
+	Metadata struct {
+		IsSubscription bool   `json:"is_subscription"`
+		PlanID         string `json:"plan_id"`
+		UserID         string `json:"user_id"`
+	} `json:"metadata"`
 }
 
 type TransferEventData struct {

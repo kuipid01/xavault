@@ -7,6 +7,7 @@ import (
 	"github.com/kuipid01/salary-vault/internal/app"
 	"github.com/kuipid01/salary-vault/internal/config"
 	"github.com/kuipid01/salary-vault/internal/database"
+	"github.com/kuipid01/salary-vault/internal/seed"
 )
 
 func main() {
@@ -23,6 +24,7 @@ func main() {
 		fmt.Println(err)
 		return
 	}
+
 	fmt.Println("Database is connected")
 
 	//run migations
@@ -33,7 +35,7 @@ func main() {
 
 	fmt.Println("Server is running on", addr)
 	fiberApp.Get("/swagger/*", swagger.HandlerDefault)
-
+	seed.Init(db)
 	if err := fiberApp.Listen(addr); err != nil {
 		fmt.Println(err)
 	}

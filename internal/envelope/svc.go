@@ -4,21 +4,29 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/kuipid01/salary-vault/internal/shared/response"
 	"github.com/kuipid01/salary-vault/internal/shared/security"
 	spendingplans "github.com/kuipid01/salary-vault/internal/spending_plans"
+	"github.com/kuipid01/salary-vault/internal/subscription"
 	"gorm.io/gorm"
 )
 
 type EnvelopeService struct {
 	repo     *EnvelopeRepo
 	planRepo *spendingplans.PlanRepository
+	subRepo  *subscription.SubscriptionRepository
 }
 
-func NewEnvelopeService(repo *EnvelopeRepo, planRepo *spendingplans.PlanRepository) *EnvelopeService {
+func NewEnvelopeService(
+	repo *EnvelopeRepo,
+	planRepo *spendingplans.PlanRepository,
+	subRepo *subscription.SubscriptionRepository,
+) *EnvelopeService {
 	return &EnvelopeService{
 		repo:     repo,
 		planRepo: planRepo,
+		subRepo:  subRepo,
 	}
 }
 
@@ -71,6 +79,23 @@ func (s *EnvelopeService) CreateEnvelope(userID string, planID string, req Creat
 			Error: map[string]string{
 				"end_date": "End date must be after start date",
 			},
+		}
+	}
+
+	userUUID, err := uuid.Parse(userID)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Invalid user ID format",
+			Error:   "invalid_user_id",
+		}
+	}
+
+	if err := s.subRepo.CanCreateContainer(userUUID, subscription.ContainerFlexible); err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Subscription limit reached",
+			Error:   err.Error(),
 		}
 	}
 

@@ -8,6 +8,7 @@ import (
 	"github.com/kuipid01/salary-vault/internal/envelope"
 	client "github.com/kuipid01/salary-vault/internal/shared/client/idempotence"
 	spendingplans "github.com/kuipid01/salary-vault/internal/spending_plans"
+	"github.com/kuipid01/salary-vault/internal/subscription"
 	"github.com/kuipid01/salary-vault/internal/users"
 	"github.com/kuipid01/salary-vault/internal/waitlist"
 	"github.com/kuipid01/salary-vault/internal/wallets"
@@ -30,6 +31,9 @@ func RunMigrations(db *gorm.DB) {
 		&bankaccounts.BankAccount{},
 		&withdrawals.Withdrawal{},
 		&waitlist.Entry{},
+		&subscription.SubscriptionPlan{},
+		&subscription.UserSubscription{},
+		&subscription.MonthlyUsage{},
 	)
 
 	if err != nil {
