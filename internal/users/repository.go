@@ -2,6 +2,7 @@ package users
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -27,6 +28,22 @@ func (r *UserRepository) FindByEmail(email string) (*User, error) {
 
 	err := r.db.Where("email = ?", email).First(&user).Error
 
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	return &user, nil
+}
+
+func (r *UserRepository) FindByNickname(nickname string) (*User, error) {
+	var user User
+	nickname = strings.ToLower(strings.TrimSpace(nickname))
+
+	err := r.db.Where("LOWER(nickname) = ?", nickname).First(&user).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
@@ -118,6 +135,28 @@ func (r *UserRepository) UpdateWithdrawalPinResetOTP(userID string, otpHash stri
 		"withdrawal_pin_reset_otp":        otpHash,
 		"withdrawal_pin_reset_expires_at": expiresAt,
 	}).Error
+}
+
+func (r *UserRepository) UpdateProfile(userID string, updates map[string]interface{}) error {
+	return r.db.Model(&User{}).Where("id = ?", userID).Updates(updates).Error
+}
+
+func (r *UserRepository) ReplaceSecurityQuestions(userID string, questions []SecurityQuestion) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("user_id = ?", userID).Delete(&SecurityQuestion{}).Error; err != nil {
+			return err
+		}
+		if len(questions) == 0 {
+			return nil
+		}
+		return tx.Create(&questions).Error
+	})
+}
+
+func (r *UserRepository) ListSecurityQuestions(userID string) ([]SecurityQuestion, error) {
+	var questions []SecurityQuestion
+	err := r.db.Where("user_id = ?", userID).Order("created_at ASC").Find(&questions).Error
+	return questions, err
 }
 
 func (r *UserRepository) ClearWithdrawalPinResetOTP(userID string) error {

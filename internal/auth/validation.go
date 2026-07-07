@@ -33,6 +33,8 @@ func validateLoginData(req LoginRequest) map[string]string {
 func validateRegistrationData(userData RegisterRequest) (RegisterRequest, map[string]string) {
 	errors := make(map[string]string)
 	userData.Email = strings.ToLower(strings.TrimSpace(userData.Email))
+	userData.FirstName = strings.TrimSpace(userData.FirstName)
+	userData.LastName = strings.TrimSpace(userData.LastName)
 	userData.Country = strings.ToUpper(strings.TrimSpace(userData.Country))
 
 	if len(userData.Email) == 0 {
@@ -41,6 +43,12 @@ func validateRegistrationData(userData RegisterRequest) (RegisterRequest, map[st
 
 	if len(userData.Password) == 0 {
 		errors["password"] = "Password is required"
+	}
+	if len(userData.FirstName) == 0 {
+		errors["first_name"] = "First name is required"
+	}
+	if len(userData.LastName) == 0 {
+		errors["last_name"] = "Last name is required"
 	}
 	if len(userData.PhoneNumber) == 0 {
 		errors["phone_number"] = "PhoneNumber is required"
@@ -68,6 +76,8 @@ func validateRegistrationData(userData RegisterRequest) (RegisterRequest, map[st
 		Email:           userData.Email,
 		Password:        userData.Password,
 		ConfirmPassword: userData.ConfirmPassword,
+		FirstName:       userData.FirstName,
+		LastName:        userData.LastName,
 		Country:         countryCode,
 		PhoneNumber:     phoneNumber,
 	}, errors

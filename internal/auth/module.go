@@ -8,16 +8,18 @@ import (
 )
 
 type Module struct {
-	Repo *users.UserRepository
-	Svc  *AuthService
-	Hnd  *AuthHandler
+	Repo     *users.UserRepository
+	AuthRepo *AuthRepository
+	Svc      *AuthService
+	Hnd      *AuthHandler
 }
 
 func NewModule(db *gorm.DB, walletService *wallets.WalletService, brevoMailer *mail.BrevoMailer) *Module {
 	repo := users.NewUserRepository(db)
+	authRepo := NewAuthRepository(db)
 	tokenService := NewTokenService()
-	svc := NewAuthService(repo, brevoMailer, tokenService, walletService)
+	svc := NewAuthService(repo, authRepo, brevoMailer, tokenService, walletService)
 
 	hnd := NewAuthHandler(svc)
-	return &Module{Repo: repo, Svc: svc, Hnd: hnd}
+	return &Module{Repo: repo, AuthRepo: authRepo, Svc: svc, Hnd: hnd}
 }

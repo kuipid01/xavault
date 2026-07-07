@@ -11,6 +11,8 @@ func RegisterAuthRoutes(v1 fiber.Router, h *AuthHandler) {
 	auth := v1.Group("/auth")
 
 	auth.Post("/register", h.Register)
+	auth.Post("/register/start", h.StartRegistration)
+	auth.Post("/register/verify-mail", h.VerifyRegistrationMail)
 	auth.Post("/login", h.Login)
 	auth.Post("/logout", h.Logout)
 
@@ -24,10 +26,19 @@ func RegisterAuthRoutes(v1 fiber.Router, h *AuthHandler) {
 	auth.Use(middleware.Protected(os.Getenv("JWT_ACCESS_SECRET")))
 
 	auth.Get("/me", h.Me)
+	auth.Get("/profile", h.Me)
+	auth.Put("/profile", h.UpdateProfile)
+	auth.Get("/profile/nickname/check", h.CheckNickname)
+	auth.Post("/profile/image", h.UploadProfileImage)
+
 	auth.Get("/withdrawal-pin/status", h.WithdrawalPinStatus)
+	auth.Post("/withdrawal-pin/verify", h.VerifyWithdrawalPin)
 	auth.Post("/withdrawal-pin", h.SetWithdrawalPin)
 	auth.Post("/withdrawal-pin/forgot", h.ForgotWithdrawalPin)
 	auth.Post("/withdrawal-pin/reset", h.ResetWithdrawalPin)
+
+	auth.Get("/security-questions", h.ListSecurityQuestions)
+	auth.Put("/security-questions", h.SaveSecurityQuestions)
 
 	auth.Post("/change-password", h.ChangePassword)
 }

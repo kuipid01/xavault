@@ -3,6 +3,7 @@ package auth
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -16,13 +17,14 @@ import (
 
 type AuthService struct {
 	repository    *users.UserRepository
+	authRepo      *AuthRepository
 	mailer        mail.Mailer
 	tokenService  *TokenService
 	walletService *wallets.WalletService
 }
 
-func NewAuthService(repository *users.UserRepository, mailer mail.Mailer, tokenService *TokenService, walletService *wallets.WalletService) *AuthService {
-	return &AuthService{repository: repository, mailer: mailer, tokenService: tokenService, walletService: walletService}
+func NewAuthService(repository *users.UserRepository, authRepo *AuthRepository, mailer mail.Mailer, tokenService *TokenService, walletService *wallets.WalletService) *AuthService {
+	return &AuthService{repository: repository, authRepo: authRepo, mailer: mailer, tokenService: tokenService, walletService: walletService}
 }
 
 func (s *AuthService) Register(req RegisterRequest) *response.APIResponse {
@@ -46,29 +48,29 @@ func (s *AuthService) Register(req RegisterRequest) *response.APIResponse {
 	}
 
 	if userExists != nil {
-		if !userExists.MailVerified {
-			_, err = s.userVerificationFlow(userExists.Email, "register")
-			if err != nil {
-				return &response.APIResponse{
-					Success: false,
-					Message: "We could not reverify user",
-					Error:   err,
-				}
-			}
-			return &response.APIResponse{
-				Success: true,
-				Message: "Verification OTP resent",
-				Data:    validData.Email,
-			}
-		} else {
-			return &response.APIResponse{
-				Success: false,
-				Message: "Email already exists",
-				Error:   ErrEmailAlreadyExists,
-			}
+		return &response.APIResponse{
+			Success: false,
+			Message: "Email already exists",
+			Error:   ErrEmailAlreadyExists,
 		}
-
 	}
+
+	temporaryUser, err := s.authRepo.FindTemporaryUserByEmail(validData.Email)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not check email verification",
+			Error:   err.Error(),
+		}
+	}
+	if temporaryUser == nil || !temporaryUser.Verified {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Verify your email before creating your account",
+			Error:   "email_not_verified",
+		}
+	}
+
 	hashedPassword, err := hashPassword(validData.Password)
 	if err != nil {
 		return &response.APIResponse{
@@ -82,13 +84,40 @@ func (s *AuthService) Register(req RegisterRequest) *response.APIResponse {
 		ID:              uuid.Must(uuid.NewV7()).String(),
 		Email:           validData.Email,
 		Password:        hashedPassword,
+		FirstName:       validData.FirstName,
+		LastName:        validData.LastName,
 		EmailVerifiedAt: &now,
-		MailVerified:    false,
+		MailVerified:    true,
 		Country:         validData.Country,
 		PhoneNumber:     validData.PhoneNumber,
 	}
+	nickname := normalizeNickname(req.Nickname)
+	if nickname != "" {
+		if !validNickname(nickname) {
+			return &response.APIResponse{
+				Success: false,
+				Message: "Invalid username",
+				Error:   "invalid_nickname",
+			}
+		}
+		existingNickname, err := s.repository.FindByNickname(nickname)
+		if err != nil {
+			return &response.APIResponse{
+				Success: false,
+				Message: "Could not check username",
+				Error:   err.Error(),
+			}
+		}
+		if existingNickname != nil {
+			return &response.APIResponse{
+				Success: false,
+				Message: "Username is not available",
+				Error:   "nickname_unavailable",
+			}
+		}
+		finalUser.Nickname = &nickname
+	}
 	_, err = s.repository.Create(&finalUser)
-	_, err = s.userVerificationFlow(finalUser.Email, "register")
 	if err != nil {
 		return &response.APIResponse{
 			Success: false,
@@ -97,10 +126,137 @@ func (s *AuthService) Register(req RegisterRequest) *response.APIResponse {
 		}
 	}
 	s.walletService.CreateWallet(finalUser.ID)
+	_ = s.authRepo.DeleteTemporaryUser(finalUser.Email)
 	return &response.APIResponse{
 		Success: true,
 		Message: "Registration successful",
 		Data:    validData.Email,
+	}
+}
+
+func (s *AuthService) StartRegistration(req StartRegistrationRequest) *response.APIResponse {
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if email == "" || !strings.Contains(email, "@") {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Enter a valid email",
+			Error:   "invalid_email",
+		}
+	}
+
+	userExists, err := s.repository.FindByEmail(email)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not check email",
+			Error:   err.Error(),
+		}
+	}
+	if userExists != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Email already exists",
+			Error:   ErrEmailAlreadyExists,
+		}
+	}
+
+	temporaryUser, err := s.authRepo.FindTemporaryUserByEmail(email)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not check registration progress",
+			Error:   err.Error(),
+		}
+	}
+	if temporaryUser != nil && temporaryUser.Verified {
+		return &response.APIResponse{
+			Success: true,
+			Message: "Email already verified. Continue registration.",
+			Data: fiber.Map{
+				"email":         email,
+				"mail_verified": true,
+				"resume":        true,
+			},
+		}
+	}
+
+	otp, err := generateNumericOTP(6)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not generate verification OTP",
+			Error:   err.Error(),
+		}
+	}
+
+	record := &TemporaryUser{
+		ID:         uuid.Must(uuid.NewV7()).String(),
+		Email:      email,
+		TokenHash:  hashToken(otp),
+		ExpiresAt:  time.Now().Add(30 * time.Minute),
+		Verified:   false,
+		VerifiedAt: nil,
+	}
+	if err := s.authRepo.UpsertTemporaryUser(record); err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not save verification OTP",
+			Error:   err.Error(),
+		}
+	}
+
+	if err := s.sendVerificationEmail(email, otp); err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not send verification email",
+			Error:   err.Error(),
+		}
+	}
+
+	return &response.APIResponse{
+		Success: true,
+		Message: "Verification OTP sent",
+		Data: fiber.Map{
+			"email": email,
+		},
+	}
+}
+
+func (s *AuthService) VerifyRegistrationMail(req VerifyRegistrationMailRequest) *response.APIResponse {
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	otp := strings.TrimSpace(req.OTP)
+	if email == "" || !strings.Contains(email, "@") {
+		return &response.APIResponse{Success: false, Message: "Enter a valid email", Error: "invalid_email"}
+	}
+	if len(otp) != 6 {
+		return &response.APIResponse{Success: false, Message: "OTP must be 6 digits", Error: "invalid_otp"}
+	}
+
+	record, err := s.authRepo.FindTemporaryUserByEmail(email)
+	if err != nil {
+		return &response.APIResponse{Success: false, Message: "Could not check OTP", Error: err.Error()}
+	}
+	if record == nil {
+		return &response.APIResponse{Success: false, Message: "Start registration again", Error: "registration_not_started"}
+	}
+	if time.Now().After(record.ExpiresAt) {
+		return &response.APIResponse{Success: false, Message: "Verification OTP has expired", Error: "otp_expired"}
+	}
+	if record.TokenHash != hashToken(otp) {
+		return &response.APIResponse{Success: false, Message: "Invalid verification OTP", Error: "invalid_otp"}
+	}
+
+	now := time.Now()
+	if err := s.authRepo.MarkTemporaryUserVerified(email, now); err != nil {
+		return &response.APIResponse{Success: false, Message: "Could not verify email", Error: err.Error()}
+	}
+
+	return &response.APIResponse{
+		Success: true,
+		Message: "Email verified successfully",
+		Data: fiber.Map{
+			"email": email,
+		},
 	}
 }
 
@@ -178,6 +334,7 @@ func (s *AuthService) Login(req LoginRequest) *response.APIResponse {
 				"email":          user.Email,
 				"mail_verified":  user.MailVerified,
 				"email_verified": user.EmailVerifiedAt,
+				"name":           user.FirstName + " " + user.LastName,
 			},
 		},
 	}
@@ -448,6 +605,12 @@ func (s *AuthService) Me(req MeRequest) *response.APIResponse {
 		Data: fiber.Map{
 			"id":                 user.ID,
 			"email":              user.Email,
+			"first_name":         user.FirstName,
+			"last_name":          user.LastName,
+			"nickname":           user.Nickname,
+			"date_of_birth":      user.DateOfBirth,
+			"address":            user.Address,
+			"profile_image_url":  user.ProfileImageURL,
 			"mail_verified":      user.MailVerified,
 			"email_verified":     user.EmailVerifiedAt,
 			"country":            user.Country,
@@ -457,6 +620,90 @@ func (s *AuthService) Me(req MeRequest) *response.APIResponse {
 			"updated_at":         user.UpdatedAt,
 		},
 	}
+}
+
+func (s *AuthService) UpdateProfile(req UpdateProfileRequest) *response.APIResponse {
+	user, err := s.repository.FindById(req.UserID)
+	if err != nil {
+		return &response.APIResponse{Success: false, Message: "Could not fetch user", Error: err.Error()}
+	}
+	if user == nil {
+		return &response.APIResponse{Success: false, Message: "User not found", Error: "user_not_found"}
+	}
+
+	updates := map[string]interface{}{}
+	if nickname := normalizeNickname(req.Nickname); nickname != "" {
+		if !validNickname(nickname) {
+			return &response.APIResponse{Success: false, Message: "Invalid nickname", Error: "invalid_nickname"}
+		}
+		existing, err := s.repository.FindByNickname(nickname)
+		if err != nil {
+			return &response.APIResponse{Success: false, Message: "Could not check nickname", Error: err.Error()}
+		}
+		if existing != nil && existing.ID != req.UserID {
+			return &response.APIResponse{Success: false, Message: "Nickname is not available", Error: "nickname_unavailable"}
+		}
+		updates["nickname"] = nickname
+	}
+
+	if strings.TrimSpace(req.DateOfBirth) != "" {
+		dob, err := time.Parse("2006-01-02", strings.TrimSpace(req.DateOfBirth))
+		if err != nil {
+			return &response.APIResponse{Success: false, Message: "Date of birth must be YYYY-MM-DD", Error: "invalid_date_of_birth"}
+		}
+		updates["date_of_birth"] = dob
+	}
+
+	if strings.TrimSpace(req.Address) != "" {
+		updates["address"] = strings.TrimSpace(req.Address)
+	}
+
+	if len(updates) == 0 {
+		return s.Me(MeRequest{UserID: req.UserID})
+	}
+
+	if err := s.repository.UpdateProfile(req.UserID, updates); err != nil {
+		return &response.APIResponse{Success: false, Message: "Could not update profile", Error: err.Error()}
+	}
+
+	return s.Me(MeRequest{UserID: req.UserID})
+}
+
+func (s *AuthService) CheckNickname(req CheckNicknameRequest) *response.APIResponse {
+	nickname := normalizeNickname(req.Nickname)
+	if !validNickname(nickname) {
+		return &response.APIResponse{Success: false, Message: "Invalid nickname", Error: "invalid_nickname"}
+	}
+
+	existing, err := s.repository.FindByNickname(nickname)
+	if err != nil {
+		return &response.APIResponse{Success: false, Message: "Could not check nickname", Error: err.Error()}
+	}
+
+	available := existing == nil || existing.ID == req.UserID
+	return &response.APIResponse{
+		Success: true,
+		Message: "Nickname availability checked",
+		Data: fiber.Map{
+			"nickname":  nickname,
+			"available": available,
+		},
+	}
+}
+
+func (s *AuthService) SaveProfileImage(userID string, imageURL string, publicID string) *response.APIResponse {
+	if strings.TrimSpace(imageURL) == "" {
+		return &response.APIResponse{Success: false, Message: "Image URL is required", Error: "image_url_required"}
+	}
+
+	if err := s.repository.UpdateProfile(userID, map[string]interface{}{
+		"profile_image_url":       imageURL,
+		"profile_image_public_id": publicID,
+	}); err != nil {
+		return &response.APIResponse{Success: false, Message: "Could not save profile image", Error: err.Error()}
+	}
+
+	return s.Me(MeRequest{UserID: userID})
 }
 
 func (s *AuthService) WithdrawalPinStatus(req WithdrawalPinStatusRequest) *response.APIResponse {
@@ -482,6 +729,32 @@ func (s *AuthService) WithdrawalPinStatus(req WithdrawalPinStatusRequest) *respo
 		Message: "Withdrawal PIN status fetched",
 		Data: fiber.Map{
 			"has_pin": user.WithdrawalPinHash != nil && *user.WithdrawalPinHash != "",
+		},
+	}
+}
+
+func (s *AuthService) VerifyWithdrawalPin(req VerifyWithdrawalPinRequest) *response.APIResponse {
+	req.Pin = strings.TrimSpace(req.Pin)
+	if validationErrors := validateWithdrawalPin(req.Pin); len(validationErrors) > 0 {
+		return &response.APIResponse{Success: false, Message: "Invalid withdrawal PIN", Error: validationErrors}
+	}
+
+	user, err := s.repository.FindById(req.UserID)
+	if err != nil {
+		return &response.APIResponse{Success: false, Message: "Could not fetch user", Error: err.Error()}
+	}
+	if user == nil || user.WithdrawalPinHash == nil || *user.WithdrawalPinHash == "" {
+		return &response.APIResponse{Success: false, Message: "Payment PIN is not set", Error: "pin_not_set"}
+	}
+	if !CheckPasswordHash(req.Pin, *user.WithdrawalPinHash) {
+		return &response.APIResponse{Success: false, Message: "Invalid payment PIN", Error: "invalid_pin"}
+	}
+
+	return &response.APIResponse{
+		Success: true,
+		Message: "Payment PIN verified",
+		Data: fiber.Map{
+			"verified": true,
 		},
 	}
 }
@@ -727,8 +1000,67 @@ func (s *AuthService) RefreshToken(req RefreshTokenRequest) *response.APIRespons
 		},
 	}
 }
+
+func (s *AuthService) ListSecurityQuestions(userID string) *response.APIResponse {
+	questions, err := s.repository.ListSecurityQuestions(userID)
+	if err != nil {
+		return &response.APIResponse{Success: false, Message: "Could not fetch security questions", Error: err.Error()}
+	}
+
+	items := make([]fiber.Map, 0, len(questions))
+	for _, question := range questions {
+		items = append(items, fiber.Map{
+			"id":         question.ID,
+			"question":   question.Question,
+			"created_at": question.CreatedAt,
+			"updated_at": question.UpdatedAt,
+		})
+	}
+
+	return &response.APIResponse{Success: true, Message: "Security questions fetched", Data: fiber.Map{"items": items}}
+}
+
+func (s *AuthService) SaveSecurityQuestions(req SaveSecurityQuestionsRequest) *response.APIResponse {
+	if len(req.Questions) == 0 {
+		return &response.APIResponse{Success: false, Message: "At least one security question is required", Error: "questions_required"}
+	}
+
+	questions := make([]users.SecurityQuestion, 0, len(req.Questions))
+	for _, input := range req.Questions {
+		question := strings.TrimSpace(input.Question)
+		answer := strings.ToLower(strings.TrimSpace(input.Answer))
+		if question == "" || answer == "" {
+			return &response.APIResponse{Success: false, Message: "Question and answer are required", Error: "invalid_security_question"}
+		}
+
+		questions = append(questions, users.SecurityQuestion{
+			ID:         uuid.Must(uuid.NewV7()).String(),
+			UserID:     req.UserID,
+			Question:   question,
+			AnswerHash: hashToken(answer),
+		})
+	}
+
+	if err := s.repository.ReplaceSecurityQuestions(req.UserID, questions); err != nil {
+		return &response.APIResponse{Success: false, Message: "Could not save security questions", Error: err.Error()}
+	}
+
+	return s.ListSecurityQuestions(req.UserID)
+}
+
 func (s *AuthService) ChangePassword(req ResetPasswordRequest) *response.APIResponse {
 	return nil
+}
+
+func normalizeNickname(value string) string {
+	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(value), "@"))
+}
+
+func validNickname(value string) bool {
+	if len(value) < 3 || len(value) > 24 {
+		return false
+	}
+	return regexp.MustCompile(`^[a-z0-9_]+$`).MatchString(value)
 }
 
 // /helpers
