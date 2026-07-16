@@ -61,10 +61,32 @@ func SeedPlans(db *gorm.DB) error {
 		},
 	}
 
-	for _, plan := range plans {
-		if err := db.Where("code = ?", plan.Code).
-			Assign(plan).
-			FirstOrCreate(&plan).Error; err != nil {
+	for _, p := range plans {
+		if p.Currency == "" {
+			p.Currency = "NGN"
+		}
+
+		if err := db.
+			Where("code = ?", p.Code).
+			Attrs(subscription.SubscriptionPlan{
+				Code: p.Code,
+			}).
+			Assign(map[string]interface{}{
+				"name":                               p.Name,
+				"price_kobo":                         p.PriceKobo,
+				"currency":                           p.Currency,
+				"max_monthly_volume_kobo":            p.MaxMonthlyVolumeKobo,
+				"max_locked_plans":                   p.MaxLockedPlans,
+				"max_flexible_envelopes":             p.MaxFlexibleEnvelopes,
+				"max_emergency_vaults":               p.MaxEmergencyVaults,
+				"free_flexible_withdrawals_monthly":  p.FreeFlexibleWithdrawalsMonthly,
+				"free_emergency_withdrawals_monthly": p.FreeEmergencyWithdrawalsMonthly,
+				"has_salary_split":                   p.HasSalarySplit,
+				"has_full_analytics":                 p.HasFullAnalytics,
+				"has_shared_envelopes":               p.HasSharedEnvelopes,
+				"has_advanced_rules":                 p.HasAdvancedRules,
+			}).
+			FirstOrCreate(&subscription.SubscriptionPlan{}).Error; err != nil {
 			return err
 		}
 	}

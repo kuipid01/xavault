@@ -2,10 +2,12 @@ package wallets
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -228,8 +230,19 @@ func (s *WalletService) InitiateDeposit(
 			return http.StatusInternalServerError, nil, fmt.Errorf("failed to create deposit log: %w", err)
 		}
 
-		// Return HTTP Status 200 along with Paystack's initialization payload data
-		return http.StatusOK, paystackResponse.Data, nil
+		paystackData := paystackPayloadData(paystackResponse.Data)
+		payload := InitiateDepositResponse{
+			AuthorizationURL: stringFromMap(paystackData, "authorization_url"),
+			AccessCode:       stringFromMap(paystackData, "access_code"),
+			Reference:        reference,
+			ProviderResponse: paystackResponse.Data,
+		}
+
+		if providerReference := stringFromMap(paystackData, "reference"); providerReference != "" {
+			payload.Reference = providerReference
+		}
+
+		return http.StatusOK, payload, nil
 	}
 
 	// 2. Funnel execution through the idempotency machine
@@ -372,7 +385,11 @@ func (s *WalletService) CreditWallet(reference string, webhookAmount int64) *res
 		}
 	}
 
-	// 6. COMPILER FIX: Added final explicit successful return statement
+	updatedDeposit, err := s.repo.GetDepositByReference(reference)
+	if err == nil {
+		walletdeposit = updatedDeposit
+	}
+
 	return &response.APIResponse{
 		Success: true,
 		Message: "Wallet credited successfully",
@@ -545,12 +562,24 @@ func (s *WalletService) GetDepositByReference(reference string) *response.APIRes
 	}
 }
 func (s *WalletService) VerifyDeposit(ctx context.Context, reference string) *response.APIResponse {
-	_, err := s.repo.GetDepositByReference(reference)
+	deposit, err := s.repo.GetDepositByReference(reference)
 	if err != nil {
 		return &response.APIResponse{
 			Success: false,
 			Message: "Failed to get deposit",
 			Error:   err.Error(),
+		}
+	}
+
+	if deposit.Status == "success" {
+		return &response.APIResponse{
+			Success: true,
+			Message: "Deposit already verified",
+			Data: DepositVerificationResponse{
+				Status:    "success",
+				Reference: reference,
+				Deposit:   deposit,
+			},
 		}
 	}
 
@@ -566,7 +595,9 @@ func (s *WalletService) VerifyDeposit(ctx context.Context, reference string) *re
 		}
 	}
 
-	if !verificationResult.Status {
+	paystackData := paystackPayloadData(verificationResult.Data)
+	transactionStatus := strings.ToLower(stringFromMap(paystackData, "status"))
+	if !verificationResult.Status || transactionStatus != "success" {
 		return &response.APIResponse{
 			Success: false,
 			Message: "Deposit not verified",
@@ -574,10 +605,109 @@ func (s *WalletService) VerifyDeposit(ctx context.Context, reference string) *re
 		}
 	}
 
+	amount, ok := int64FromMap(paystackData, "amount")
+	if !ok || amount <= 0 {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Invalid verified deposit amount",
+			Error:   "invalid_verified_amount",
+		}
+	}
+
+	creditResult := s.CreditWallet(reference, amount)
+	if creditResult.Error != nil {
+		if creditResult.Error == "deposit_already_processed" {
+			deposit, err := s.repo.GetDepositByReference(reference)
+			if err == nil {
+				return &response.APIResponse{
+					Success: true,
+					Message: "Deposit already verified",
+					Data: DepositVerificationResponse{
+						Status:    "success",
+						Reference: reference,
+						Deposit:   deposit,
+					},
+				}
+			}
+		}
+
+		return creditResult
+	}
+
+	verifiedDeposit, _ := s.repo.GetDepositByReference(reference)
+
 	return &response.APIResponse{
 		Success: true,
 		Message: "Deposit verified successfully",
-		Data:    verificationResult,
+		Data: DepositVerificationResponse{
+			Status:    "success",
+			Reference: reference,
+			Deposit:   verifiedDeposit,
+		},
 	}
 
+}
+
+func paystackPayloadData(payload interface{}) map[string]interface{} {
+	root := mapFromInterface(payload)
+	if root == nil {
+		return nil
+	}
+
+	if data := mapFromInterface(root["data"]); data != nil {
+		return data
+	}
+
+	return root
+}
+
+func mapFromInterface(value interface{}) map[string]interface{} {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		return typed
+	default:
+		return nil
+	}
+}
+
+func stringFromMap(data map[string]interface{}, key string) string {
+	if data == nil {
+		return ""
+	}
+
+	switch value := data[key].(type) {
+	case string:
+		return value
+	case fmt.Stringer:
+		return value.String()
+	default:
+		return ""
+	}
+}
+
+func int64FromMap(data map[string]interface{}, key string) (int64, bool) {
+	if data == nil {
+		return 0, false
+	}
+
+	switch value := data[key].(type) {
+	case int64:
+		return value, true
+	case int:
+		return int64(value), true
+	case int32:
+		return int64(value), true
+	case float64:
+		return int64(value), true
+	case float32:
+		return int64(value), true
+	case json.Number:
+		parsed, err := value.Int64()
+		return parsed, err == nil
+	case string:
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
 }

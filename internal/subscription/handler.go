@@ -1,23 +1,41 @@
 package subscription
 
 import (
+	"fmt"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 )
 
+// UserReader is a minimal interface to fetch a user's email.
+// Defined here to avoid an import cycle (users → subscription → users).
+type UserReader interface {
+	FindById(id string) (UserInfo, error)
+}
+
+// UserInfo contains the fields the subscription handler needs from a user.
+type UserInfo struct {
+	Email string
+}
+
 type SubscriptionHandler struct {
-	service         *SubscriptionService
+	service    *SubscriptionService
+	userReader UserReader
 }
 
 func NewSubscriptionHandler(
 	service *SubscriptionService,
+	userReader UserReader,
 ) *SubscriptionHandler {
-
 	return &SubscriptionHandler{
-		service: service,
+		service:    service,
+		userReader: userReader,
 	}
 }
 
+// CreateSubscription godoc
+// POST /api/v1/subscriptions
+// Creates a pending subscription and returns a Paystack payment URL.
 func (h *SubscriptionHandler) CreateSubscription(c *fiber.Ctx) error {
 	userIDStr := c.Locals("user_id").(string)
 	userID, err := uuid.Parse(userIDStr)
@@ -25,28 +43,36 @@ func (h *SubscriptionHandler) CreateSubscription(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid user ID"})
 	}
 
-	// 1. Check if user already has an active subscription
-	activeSub, _ := h.service.GetActiveSubscription(userID)
-	if activeSub != nil {
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "You already have an active subscription"})
-	}
+	// Reject if the user already has an active subscription
+	// activeSub, _ := h.service.GetActiveSubscription(userID)
+	// if activeSub != nil {
+	// 	return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "You already have an active subscription"})
+	// }
 
 	var req CreateSubscriptionRequest
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request payload"})
 	}
 
-	// In a real flow, this would call the payment provider to initialize a transaction
-	// or return data to the frontend to initialize the transaction.
-	// We'll leave it to just validate and return the plan for now, since frontend handles Paystack pop-up.
-	result, err := h.service.CreateSubscription(userID, &req)
+	// Fetch user email for Paystack
+	userInfo, err := h.userReader.FindById(userIDStr)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "User not found"})
+	}
+
+	result, err := h.service.CreateSubscription(c.Context(), userID, userInfo.Email, &req)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-
-	return c.Status(fiber.StatusOK).JSON(fiber.Map{"data": result})
+	fmt.Println("RESPONSE FROM CALL", result)
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+		"message": "Subscription payment initiated. Complete payment to activate.",
+		"data":    result,
+	})
 }
 
+// GetActiveSubscription godoc
+// GET /api/v1/subscriptions/active
 func (h *SubscriptionHandler) GetActiveSubscription(c *fiber.Ctx) error {
 	userIDStr := c.Locals("user_id").(string)
 	userID, err := uuid.Parse(userIDStr)
@@ -56,8 +82,21 @@ func (h *SubscriptionHandler) GetActiveSubscription(c *fiber.Ctx) error {
 
 	result, err := h.service.GetActiveSubscription(userID)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "No active subscription found"})
 	}
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"data": result})
+}
+
+func (h *SubscriptionHandler) GetPlans(c *fiber.Ctx) error {
+	result, err := h.service.GetPlans()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": err.Error(),
+		})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"data": result,
+	})
 }

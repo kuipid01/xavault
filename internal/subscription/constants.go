@@ -38,6 +38,7 @@ const (
 type SubscriptionStatus string
 
 const (
+	SubPending  SubscriptionStatus = "pending"
 	SubActive   SubscriptionStatus = "active"
 	SubPastDue  SubscriptionStatus = "past_due"
 	SubCanceled SubscriptionStatus = "canceled"

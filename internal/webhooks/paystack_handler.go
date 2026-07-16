@@ -33,35 +33,99 @@ func NewWebhookHandler(
 	}
 }
 
-// PaystackWebhook handles all events from Paystack in one place
 func (h *WebhookHandler) PaystackWebhook(c *fiber.Ctx) error {
 	payload := c.Body()
 	signature := c.Get("X-Paystack-Signature")
 
-	// 1. Enforce strict signature validation right here
+	log.Printf("[PAYSTACK_WEBHOOK][RECEIVED] payload_size=%d signature_present=%v",
+		len(payload),
+		signature != "",
+	)
+
 	if !isValidPaystackSignature(payload, signature) {
+		log.Printf("[PAYSTACK_WEBHOOK][INVALID_SIGNATURE] payload_size=%d signature_present=%v",
+			len(payload),
+			signature != "",
+		)
+
 		return c.Status(fiber.StatusBadRequest).SendString("Invalid signature")
 	}
-	err := h.ExtractAndProcessEvent(string(payload))
-	if err != nil {
-		return c.Status(fiber.StatusBadRequest).SendString("Invalid signature")
+
+	log.Printf("[PAYSTACK_WEBHOOK][SIGNATURE_VALID] payload_size=%d", len(payload))
+
+	if err := h.ExtractAndProcessEvent(string(payload)); err != nil {
+		log.Printf("[PAYSTACK_WEBHOOK][PROCESS_ERROR] error=%v payload=%s",
+			err,
+			string(payload),
+		)
+
+		return c.Status(fiber.StatusBadRequest).SendString("Webhook processing failed")
 	}
+
+	log.Printf("[PAYSTACK_WEBHOOK][ACKNOWLEDGED]")
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"status": "acknowledged"})
 }
 
 func isValidPaystackSignature(payload []byte, signature string) bool {
 	secret := []byte(os.Getenv("PAYSTACK_SECRET_KEY"))
-	hmac := hmac.New(sha512.New, secret)
-	hmac.Write(payload)
-	signedPayload := hex.EncodeToString(hmac.Sum(nil))
 
-	return signedPayload == signature
+	mac := hmac.New(sha512.New, secret)
+	mac.Write(payload)
+
+	expectedSignature := hex.EncodeToString(mac.Sum(nil))
+
+	return hmac.Equal([]byte(expectedSignature), []byte(signature))
 }
 
-// ExtractAndProcessEvent parses raw body text into typed domain models
+type FlexibleBool bool
+
+func (b *FlexibleBool) UnmarshalJSON(data []byte) error {
+	var boolValue bool
+	if err := json.Unmarshal(data, &boolValue); err == nil {
+		*b = FlexibleBool(boolValue)
+		return nil
+	}
+
+	var stringValue string
+	if err := json.Unmarshal(data, &stringValue); err == nil {
+		switch stringValue {
+		case "true", "1":
+			*b = true
+		case "false", "0", "":
+			*b = false
+		default:
+			return fmt.Errorf("invalid FlexibleBool value: %q", stringValue)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("invalid FlexibleBool value: %s", string(data))
+}
+func (m *ChargeSuccessMetadata) UnmarshalJSON(data []byte) error {
+	if string(data) == `""` || string(data) == `null` {
+		*m = ChargeSuccessMetadata{}
+		return nil
+	}
+
+	type Alias ChargeSuccessMetadata
+	var metadata Alias
+
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return err
+	}
+
+	*m = ChargeSuccessMetadata(metadata)
+	return nil
+}
+
+type ChargeSuccessMetadata struct {
+	IsSubscription FlexibleBool `json:"is_subscription"`
+	PlanID         string       `json:"plan_id"`
+	UserID         string       `json:"user_id"`
+}
+
 func (h *WebhookHandler) ExtractAndProcessEvent(bodyText string) error {
-	// 1. Convert text stream into raw byte segment
 	bodyBytes := []byte(bodyText)
 
 	var envelope EventEnvelope
@@ -69,32 +133,38 @@ func (h *WebhookHandler) ExtractAndProcessEvent(bodyText string) error {
 		return fmt.Errorf("failed to parse base envelope: %w", err)
 	}
 
-	// 2. Evaluate the event type and run specific parser targets
 	switch envelope.Event {
 	case "charge.success":
 		var chargeData ChargeSuccessData
-		// Unmarshal directly from the preserved raw message bytes
 		if err := json.Unmarshal(envelope.Data, &chargeData); err != nil {
 			return fmt.Errorf("failed to parse charge.success data: %w", err)
 		}
 
-		// Hand off to your business handlers smoothly
-		fmt.Printf("🎉 Deposit verified! Ref: %s, Amount: %d kobo\n", chargeData.Reference, chargeData.Amount)
-		
-		if chargeData.Metadata.IsSubscription {
+		log.Printf("[PAYSTACK_WEBHOOK][CHARGE_SUCCESS] reference=%s amount=%d status=%s",
+			chargeData.Reference,
+			chargeData.Amount,
+			chargeData.Status,
+		)
+
+		if bool(chargeData.Metadata.IsSubscription) {
 			err := h.subscriptionService.ActivateSubscription(
 				chargeData.Metadata.UserID,
 				chargeData.Metadata.PlanID,
 				chargeData.Reference,
 			)
 			if err != nil {
-				log.Printf("❌ Failed to activate subscription: %v\n", err)
-			} else {
-				log.Printf("✅ Subscription activated for user %s\n", chargeData.Metadata.UserID)
+				return fmt.Errorf("failed to activate subscription: %w", err)
 			}
+
+			log.Printf("[PAYSTACK_WEBHOOK][SUBSCRIPTION_ACTIVATED] user_id=%s plan_id=%s reference=%s",
+				chargeData.Metadata.UserID,
+				chargeData.Metadata.PlanID,
+				chargeData.Reference,
+			)
+
 			return nil
 		}
-		
+
 		if chargeData.DedicatedAccount.AccountNumber != "" {
 			h.walletService.CreditDedicatedAccountTransfer(
 				chargeData.Reference,
@@ -111,7 +181,10 @@ func (h *WebhookHandler) ExtractAndProcessEvent(bodyText string) error {
 			return fmt.Errorf("failed to parse transfer.success data: %w", err)
 		}
 
-		result := h.withdrawalService.CompleteProviderWithdrawal(transferData.Reference, transferData.Status)
+		result := h.withdrawalService.CompleteProviderWithdrawal(
+			transferData.Reference,
+			transferData.Status,
+		)
 		if result.Error != nil {
 			return fmt.Errorf("failed to complete withdrawal: %v", result.Error)
 		}
@@ -130,8 +203,9 @@ func (h *WebhookHandler) ExtractAndProcessEvent(bodyText string) error {
 		if result.Error != nil {
 			return fmt.Errorf("failed to fail withdrawal: %v", result.Error)
 		}
+
 	default:
-		log.Printf("ℹ️ Ignored unhandled event hook: %s", envelope.Event)
+		log.Printf("[PAYSTACK_WEBHOOK][IGNORED_EVENT] event=%s", envelope.Event)
 	}
 
 	return nil

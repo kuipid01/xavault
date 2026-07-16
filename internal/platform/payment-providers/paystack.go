@@ -44,8 +44,13 @@ func (p *PaystackProvider) InitiateDeposit(ctx context.Context, data *DepositBod
 		return nil, err
 	}
 
+	status, _ := respTarget["status"].(bool)
+	if !status {
+		return nil, fmt.Errorf("paystack deposit initiation failed: %v", respTarget["message"])
+	}
+
 	return &DepositResponse{
-		Status:  true,
+		Status:  status,
 		Message: "Deposit initiated successfully",
 		Data:    respTarget,
 	}, nil
@@ -67,8 +72,13 @@ func (p *PaystackProvider) VerifyDeposit(ctx context.Context, reference string) 
 		return nil, err
 	}
 
+	status, _ := respTarget["status"].(bool)
+	if !status {
+		return nil, fmt.Errorf("paystack deposit verification failed: %v", respTarget["message"])
+	}
+
 	return &DepositResponse{
-		Status:  true,
+		Status:  status,
 		Message: "Deposit verified successfully",
 		Data:    respTarget,
 	}, nil

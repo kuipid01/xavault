@@ -1,60 +1,101 @@
 package subscription
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	paymentproviders "github.com/kuipid01/salary-vault/internal/platform/payment-providers"
 )
 
 type SubscriptionService struct {
-	subRepo *SubscriptionRepository
+	subRepo         *SubscriptionRepository
+	paymentProvider paymentproviders.PaymentProvider
 }
 
-func NewSubscriptionService(subRepo *SubscriptionRepository) *SubscriptionService {
-	return &SubscriptionService{subRepo: subRepo}
+func NewSubscriptionService(
+	subRepo *SubscriptionRepository,
+	paymentProvider paymentproviders.PaymentProvider,
+) *SubscriptionService {
+	return &SubscriptionService{
+		subRepo:         subRepo,
+		paymentProvider: paymentProvider,
+	}
 }
 
-func (s *SubscriptionService) CreateSubscription(userID uuid.UUID, req *CreateSubscriptionRequest) (*CreateSubscriptionResponse, error) {
-	// Let's assume we fetch the plan from repo or hardcode for now if there's no GetPlan method.
-	// For now, return a placeholder plan or fetch from DB.
+// CreateSubscription initialises a Paystack payment and creates a pending subscription row.
+// The subscription becomes active only after the webhook confirms payment via ActivateSubscription.
+func (s *SubscriptionService) CreateSubscription(
+	ctx context.Context,
+	userID uuid.UUID,
+	userEmail string,
+	req *CreateSubscriptionRequest,
+) (*CreateSubscriptionResponse, error) {
+	// 1. Fetch plan from DB
 	var plan SubscriptionPlan
-	err := s.subRepo.db.First(&plan, "id = ?", req.PlanID).Error
-	if err != nil {
+	if err := s.subRepo.db.First(&plan, "id = ?", req.PlanID).Error; err != nil {
 		return nil, fmt.Errorf("plan not found: %w", err)
 	}
-	return &CreateSubscriptionResponse{Plan: plan}, nil
+
+	// 2. Build a unique Paystack reference
+	reference := fmt.Sprintf("SUB_%s_%s_%d", userID, plan.ID, time.Now().UnixMilli())
+
+	// 3. Initiate deposit with Paystack, embedding subscription metadata
+	depositBody := &paymentproviders.DepositBody{
+		Amount:    plan.PriceKobo,
+		Email:     userEmail,
+		Currency:  plan.Currency,
+		Reference: reference,
+		Metadata: map[string]interface{}{
+			"is_subscription": true,
+			"plan_id":         plan.ID.String(),
+			"user_id":         userID.String(),
+		},
+	}
+
+	depositResp, err := s.paymentProvider.InitiateDeposit(ctx, depositBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initiate payment: %w", err)
+	}
+	fmt.Println("response data:", depositResp)
+	// Extract authorization_url from the Paystack response data
+	resp := depositResp.Data.(map[string]interface{})
+	data := resp["data"].(map[string]interface{})
+	paymentURL := data["authorization_url"].(string)
+
+	// 4. Create a pending subscription row – will be activated by the webhook
+	pending := &UserSubscription{
+		BaseModel: BaseModel{
+			ID: uuid.New(),
+		},
+		UserID:             userID,
+		PlanID:             plan.ID,
+		Status:             SubPending,
+		CurrentPeriodStart: time.Time{}, // set on activation
+		CurrentPeriodEnd:   time.Time{}, // set on activation
+		Provider:           "paystack",
+		ProviderRef:        reference,
+		PaymentReference:   reference,
+	}
+
+	if err := s.subRepo.CreatePendingSubscription(pending); err != nil {
+		return nil, fmt.Errorf("failed to create pending subscription: %w", err)
+	}
+
+	return &CreateSubscriptionResponse{
+		Plan:             plan,
+		PaymentURL:       paymentURL,
+		PaymentReference: reference,
+	}, nil
 }
 
+// ActivateSubscription is called from the Paystack charge.success webhook.
+// It finds the existing pending subscription by the Paystack reference and activates it.
 func (s *SubscriptionService) ActivateSubscription(userIDStr, planIDStr, providerRef string) error {
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		return fmt.Errorf("invalid user id: %w", err)
+	if err := s.subRepo.ActivateByReference(providerRef); err != nil {
+		return fmt.Errorf("activate subscription: %w", err)
 	}
-	planID, err := uuid.Parse(planIDStr)
-	if err != nil {
-		return fmt.Errorf("invalid plan id: %w", err)
-	}
-
-	var plan SubscriptionPlan
-	if err := s.subRepo.db.First(&plan, "id = ?", planID).Error; err != nil {
-		return fmt.Errorf("plan not found: %w", err)
-	}
-
-	sub := UserSubscription{
-		UserID:             userID,
-		PlanID:             planID,
-		Status:             SubActive, // Assuming SubActive is a constant
-		CurrentPeriodStart: time.Now(),
-		CurrentPeriodEnd:   time.Now().AddDate(0, 1, 0), // 1 month
-		Provider:           "paystack",
-		ProviderRef:        providerRef,
-	}
-
-	if err := s.subRepo.db.Create(&sub).Error; err != nil {
-		return fmt.Errorf("failed to create subscription: %w", err)
-	}
-
 	return nil
 }
 
@@ -76,4 +117,8 @@ func (s *SubscriptionService) GetActiveSubscription(userID uuid.UUID) (*GetSubsc
 
 func (s *SubscriptionService) GetSubscriptionHistory() (*GetSubscriptionsResponse, error) {
 	return nil, nil
+}
+
+func (s *SubscriptionService) GetPlans() ([]SubscriptionPlan, error) {
+	return s.subRepo.GetPlans()
 }

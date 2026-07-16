@@ -18,11 +18,7 @@ type ChargeSuccessData struct {
 	DedicatedAccount struct {
 		AccountNumber string `json:"account_number"`
 	} `json:"dedicated_account"`
-	Metadata struct {
-		IsSubscription bool   `json:"is_subscription"`
-		PlanID         string `json:"plan_id"`
-		UserID         string `json:"user_id"`
-	} `json:"metadata"`
+	Metadata ChargeSuccessMetadata `json:"metadata"`
 }
 
 type TransferEventData struct {

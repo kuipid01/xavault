@@ -1,4 +1,5 @@
 package subscription
+
 import (
 	"os"
 
@@ -7,8 +8,8 @@ import (
 )
 
 func RegisterSubscriptionRoutes(v1 fiber.Router, h *SubscriptionHandler) {
-	envelopes := v1.Group("/plans/:planId/envelopes", middleware.Protected(os.Getenv("JWT_ACCESS_SECRET")))
-
-	envelopes.Post("/", h.CreateSubscription)
-	envelopes.Get("/", h.GetActiveSubscription)
+	subs := v1.Group("/subscriptions", middleware.Protected(os.Getenv("JWT_ACCESS_SECRET")))
+	subs.Get("/plans", h.GetPlans)
+	subs.Post("/", h.CreateSubscription)
+	subs.Get("/active", h.GetActiveSubscription)
 }

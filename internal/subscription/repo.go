@@ -1,6 +1,8 @@
 package subscription
 
 import (
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,6 +17,48 @@ func NewSubscriptionRepository(db *gorm.DB) *SubscriptionRepository {
 	return &SubscriptionRepository{db: db}
 }
 
+// CreatePendingSubscription inserts a new subscription row in pending state.
+// The row will be activated by ActivateByReference once Paystack confirms payment.
+func (s *SubscriptionRepository) CreatePendingSubscription(sub *UserSubscription) error {
+	return s.db.Create(sub).Error
+}
+
+// GetPendingByReference finds a pending subscription by its Paystack transaction reference.
+func (s *SubscriptionRepository) GetPendingByReference(reference string) (*UserSubscription, error) {
+	var sub UserSubscription
+	err := s.db.
+		Preload("Plan").
+		Where("payment_reference = ? AND status = ?", reference, SubPending).
+		First(&sub).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("no pending subscription found for reference %s", reference)
+		}
+		return nil, err
+	}
+	return &sub, nil
+}
+
+// ActivateByReference finds the pending subscription by reference and marks it active.
+func (s *SubscriptionRepository) ActivateByReference(reference string) error {
+	now := time.Now()
+	result := s.db.Model(&UserSubscription{}).
+		Where("payment_reference = ? AND status = ?", reference, SubPending).
+		Updates(map[string]interface{}{
+			"status":               SubActive,
+			"current_period_start": now,
+			"current_period_end":   now.AddDate(0, 1, 0), // 1 month
+		})
+	if result.Error != nil {
+		return fmt.Errorf("failed to activate subscription: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("no pending subscription found for reference %s", reference)
+	}
+	return nil
+}
+
+// GetActiveSubscription returns the user's current active subscription.
 func (s *SubscriptionRepository) GetActiveSubscription(userID uuid.UUID) (*UserSubscription, error) {
 	var sub UserSubscription
 	tx := s.db
@@ -113,4 +157,22 @@ func (s *SubscriptionRepository) CanAddManagedVolume(
 	}
 
 	return nil
+}
+
+func (s *SubscriptionRepository) GetPlans() ([]SubscriptionPlan, error) {
+	var plans []SubscriptionPlan
+
+	err := s.db.
+		Order(`
+			CASE code
+				WHEN 'free' THEN 1
+				WHEN 'lite' THEN 2
+				WHEN 'premium' THEN 3
+				WHEN 'power' THEN 4
+				ELSE 5
+			END
+		`).
+		Find(&plans).Error
+
+	return plans, err
 }
