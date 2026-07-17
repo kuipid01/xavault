@@ -152,7 +152,6 @@ func (b *BrevoMailer) SendForgetPasswordMail(email, otp string) error {
 		htmlContent,
 		nil,
 	)
-
 	return err
 }
 

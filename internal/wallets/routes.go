@@ -15,6 +15,7 @@ func RegisterWalletRoutes(v1 fiber.Router, h *WalletHandler) {
 	wallet.Post("/deposit/initiate", h.InitiateDeposit)
 	wallet.Get("/deposits", h.GetAllDeposits)
 	wallet.Get("/deposit/:reference", h.GetDepositByReference)
+	wallet.Post("/deposit/:reference/dismiss", h.DismissDeposit)
 	wallet.Get("/ledger", h.GetMyWalletLedger)
 	wallet.Post("/deposit/:reference/verify", h.VerifyDeposit)
 }

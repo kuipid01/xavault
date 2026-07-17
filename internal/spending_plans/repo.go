@@ -269,6 +269,26 @@ func (r *PlanRepository) CountByUserID(userID string) (int64, error) {
 	return count, nil
 }
 
+// CountOpenByUserIDTx returns plans that still occupy a subscription plan slot.
+func (r *PlanRepository) CountOpenByUserIDTx(tx *gorm.DB, userID string) (int64, error) {
+	var count int64
+
+	err := tx.
+		Model(&SpendingPlan{}).
+		Where("user_id = ? AND status NOT IN ?", userID, []string{
+			PlanStatusCancelled,
+			PlanStatusCompleted,
+			PlanStatusExpired,
+		}).
+		Count(&count).Error
+
+	if err != nil {
+		return 0, err
+	}
+
+	return count, nil
+}
+
 // CountActiveByUserID returns active plan count for dashboard/summary.
 func (r *PlanRepository) CountActiveByUserID(userID string) (int64, error) {
 	var count int64

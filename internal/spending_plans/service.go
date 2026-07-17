@@ -1,6 +1,7 @@
 package spendingplans
 
 import (
+	"errors"
 	"log"
 	"strings"
 	"time"
@@ -103,19 +104,6 @@ func (s *PlanService) CreateDraftPlan(userID string, req CreatePlanRequest) *res
 		}
 	}
 
-	containerType := subscription.ContainerLocked
-	if req.UnboxedBalancePolicy == PlanUnboxedPolicyFlexible {
-		containerType = subscription.ContainerFlexible
-	}
-
-	if err := s.subRepo.CanCreateContainer(userUUID, containerType); err != nil {
-		return &response.APIResponse{
-			Success: false,
-			Message: "Subscription limit reached",
-			Error:   err.Error(),
-		}
-	}
-
 	plan := &SpendingPlan{
 		UserID:               userID,
 		WalletID:             wallet.ID,
@@ -128,11 +116,22 @@ func (s *PlanService) CreateDraftPlan(userID string, req CreatePlanRequest) *res
 		EndDate:              endDate,
 	}
 
-	err = s.repository.Create(plan)
+	err = s.repository.WithTransaction(func(tx *gorm.DB) error {
+		currentPlanCount, err := s.repository.CountOpenByUserIDTx(tx, userID)
+		if err != nil {
+			return err
+		}
+
+		if err := s.subRepo.CanCreatePlan(userUUID, currentPlanCount); err != nil {
+			return err
+		}
+
+		return tx.Create(plan).Error
+	})
 	if err != nil {
 		return &response.APIResponse{
 			Success: false,
-			Message: "Could not create spending plan",
+			Message: planCreateErrorMessage(err),
 			Error:   err,
 		}
 	}
@@ -527,6 +526,15 @@ func (s *PlanService) ConfirmPlan(userID string, planID string, req ConfirmPlanR
 			return ErrInvalidPlanDateRange
 		}
 
+		userUUID, err := uuid.Parse(userID)
+		if err != nil {
+			return err
+		}
+
+		if err := s.subRepo.ReserveManagedVolume(tx, userUUID, plan.Amount); err != nil {
+			return err
+		}
+
 		wallet, balanceBefore, balanceAfter, err := s.walletRepo.LockFundsForSpendingPlanTx(
 			tx,
 			userID,
@@ -577,7 +585,7 @@ func (s *PlanService) ConfirmPlan(userID string, planID string, req ConfirmPlanR
 	if err != nil {
 		return &response.APIResponse{
 			Success: false,
-			Message: "Could not confirm spending plan",
+			Message: planConfirmErrorMessage(err),
 			Error:   err,
 		}
 	}
@@ -913,6 +921,30 @@ func (s *PlanService) CancelPlan(userID string, planID string, req CancelPlanReq
 			RefundedAmount:  refundedAmount,
 		},
 	}
+}
+
+func planCreateErrorMessage(err error) string {
+	if errors.Is(err, subscription.ErrSubscriptionRequired) {
+		return "Active subscription required"
+	}
+
+	if errors.Is(err, subscription.ErrPlanLimitReached) {
+		return "Subscription limit reached"
+	}
+
+	return "Could not create spending plan"
+}
+
+func planConfirmErrorMessage(err error) string {
+	if errors.Is(err, subscription.ErrSubscriptionRequired) {
+		return "Active subscription required"
+	}
+
+	if errors.Is(err, subscription.ErrPlanLimitReached) {
+		return "Monthly plan volume limit reached"
+	}
+
+	return "Could not confirm spending plan"
 }
 
 func calculatePlanCancellationFee(amount int64) int64 {

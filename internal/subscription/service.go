@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -12,6 +13,21 @@ import (
 type SubscriptionService struct {
 	subRepo         *SubscriptionRepository
 	paymentProvider paymentproviders.PaymentProvider
+}
+
+func planTier(code PlanCode) int {
+	switch code {
+	case PlanFree:
+		return 0
+	case PlanLite:
+		return 1
+	case PlanPremium:
+		return 2
+	case PlanPower:
+		return 3
+	default:
+		return -1
+	}
 }
 
 func NewSubscriptionService(
@@ -36,6 +52,15 @@ func (s *SubscriptionService) CreateSubscription(
 	var plan SubscriptionPlan
 	if err := s.subRepo.db.First(&plan, "id = ?", req.PlanID).Error; err != nil {
 		return nil, fmt.Errorf("plan not found: %w", err)
+	}
+
+	activeSub, err := s.subRepo.GetActiveSubscription(userID)
+	if err == nil {
+		if planTier(plan.Code) <= planTier(activeSub.Plan.Code) {
+			return nil, ErrPlanNotUpgrade
+		}
+	} else if !errors.Is(err, ErrSubscriptionRequired) {
+		return nil, err
 	}
 
 	// 2. Build a unique Paystack reference

@@ -1,6 +1,7 @@
 package envelope
 
 import (
+	"errors"
 	"strings"
 	"time"
 
@@ -91,14 +92,6 @@ func (s *EnvelopeService) CreateEnvelope(userID string, planID string, req Creat
 		}
 	}
 
-	if err := s.subRepo.CanCreateContainer(userUUID, subscription.ContainerFlexible); err != nil {
-		return &response.APIResponse{
-			Success: false,
-			Message: "Subscription limit reached",
-			Error:   err.Error(),
-		}
-	}
-
 	var createdEnvelope *Envelope
 
 	err = s.repo.WithTransaction(func(tx *gorm.DB) error {
@@ -157,6 +150,15 @@ func (s *EnvelopeService) CreateEnvelope(userID string, planID string, req Creat
 		policy := strings.TrimSpace(req.UnboxedBalancePolicy)
 		if policy == "" {
 			policy = EnvelopeUnboxedPolicyFlexible
+		}
+
+		currentEnvelopeCount, err := s.repo.CountActiveByPlanIDTx(tx, planID)
+		if err != nil {
+			return err
+		}
+
+		if err := s.subRepo.CanCreateEnvelope(userUUID, currentEnvelopeCount); err != nil {
+			return err
 		}
 
 		envelope := &Envelope{
@@ -650,6 +652,22 @@ func isValidEnvelopeUnboxedPolicy(policy string) bool {
 }
 
 func envelopeErrorResponse(message string, err error) *response.APIResponse {
+	if errors.Is(err, subscription.ErrSubscriptionRequired) {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Active subscription required",
+			Error:   err,
+		}
+	}
+
+	if errors.Is(err, subscription.ErrPlanLimitReached) {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Subscription limit reached",
+			Error:   err,
+		}
+	}
+
 	if err == ErrPlanNotFound {
 		return &response.APIResponse{
 			Success: false,

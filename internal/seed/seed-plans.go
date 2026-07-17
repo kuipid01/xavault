@@ -47,8 +47,8 @@ func SeedPlans(db *gorm.DB) error {
 		{
 			Code:                            subscription.PlanPower,
 			Name:                            "Power",
-			PriceKobo:                       200_000,     // ₦2,000
-			MaxMonthlyVolumeKobo:            200_000_000, // ₦2m
+			PriceKobo:                       200_000, // ₦2,000
+			MaxMonthlyVolumeKobo:            -1,      // Unlimited
 			MaxLockedPlans:                  -1,
 			MaxFlexibleEnvelopes:            -1,
 			MaxEmergencyVaults:              3,

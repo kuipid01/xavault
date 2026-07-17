@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type SubscriptionRepository struct {
@@ -60,8 +61,11 @@ func (s *SubscriptionRepository) ActivateByReference(reference string) error {
 
 // GetActiveSubscription returns the user's current active subscription.
 func (s *SubscriptionRepository) GetActiveSubscription(userID uuid.UUID) (*UserSubscription, error) {
+	return s.getActiveSubscription(s.db, userID)
+}
+
+func (s *SubscriptionRepository) getActiveSubscription(tx *gorm.DB, userID uuid.UUID) (*UserSubscription, error) {
 	var sub UserSubscription
-	tx := s.db
 	err := tx.
 		Preload("Plan").
 		Where("user_id = ? AND status = ? AND current_period_end > ?", userID, SubActive, time.Now()).
@@ -83,46 +87,53 @@ func unlimitedMoney(limit int64) bool {
 	return limit < 0
 }
 
-func (s *SubscriptionRepository) CanCreateContainer(
+func (s *SubscriptionRepository) CanCreatePlan(
 	userID uuid.UUID,
-	containerType ContainerType,
+	currentPlanCount int64,
 ) error {
 	sub, err := s.GetActiveSubscription(userID)
 	if err != nil {
 		return err
 	}
 
-	periodKey := time.Now().Format("2006-01")
+	limit := sub.Plan.MaxLockedPlans
+	if !unlimitedInt(limit) && currentPlanCount >= int64(limit) {
+		return ErrPlanLimitReached
+	}
 
-	var usage MonthlyUsage
-	tx := s.db
-	err = tx.Where("user_id = ? AND period_key = ?", userID, periodKey).
-		FirstOrCreate(&usage, MonthlyUsage{
-			UserID:    userID,
-			PeriodKey: periodKey,
-		}).Error
+	return nil
+}
 
+func (s *SubscriptionRepository) CanCreateEnvelope(
+	userID uuid.UUID,
+	currentEnvelopeCount int64,
+) error {
+	sub, err := s.GetActiveSubscription(userID)
 	if err != nil {
 		return err
 	}
 
-	plan := sub.Plan
+	limit := sub.Plan.MaxFlexibleEnvelopes
+	if !unlimitedInt(limit) && currentEnvelopeCount >= int64(limit) {
+		return ErrPlanLimitReached
+	}
 
-	switch containerType {
-	case ContainerLocked:
-		if !unlimitedInt(plan.MaxLockedPlans) && usage.LockedPlansCreated >= plan.MaxLockedPlans {
-			return ErrPlanLimitReached
-		}
+	return nil
+}
 
-	case ContainerFlexible:
-		if !unlimitedInt(plan.MaxFlexibleEnvelopes) && usage.FlexibleEnvelopesCreated >= plan.MaxFlexibleEnvelopes {
-			return ErrPlanLimitReached
-		}
+func (s *SubscriptionRepository) CanAddMonthlyVolume(
+	userID uuid.UUID,
+	currentVolumeKobo int64,
+	amountKobo int64,
+) error {
+	sub, err := s.GetActiveSubscription(userID)
+	if err != nil {
+		return err
+	}
 
-	case ContainerEmergency:
-		if !unlimitedInt(plan.MaxEmergencyVaults) && usage.EmergencyVaultsCreated >= plan.MaxEmergencyVaults {
-			return ErrPlanLimitReached
-		}
+	limit := sub.Plan.MaxMonthlyVolumeKobo
+	if !unlimitedMoney(limit) && currentVolumeKobo+amountKobo > limit {
+		return ErrPlanLimitReached
 	}
 
 	return nil
@@ -132,21 +143,20 @@ func (s *SubscriptionRepository) CanAddManagedVolume(
 	userID uuid.UUID,
 	amountKobo int64,
 ) error {
-	sub, err := s.GetActiveSubscription(userID)
+	return s.canAddManagedVolume(s.db, userID, amountKobo)
+}
+
+func (s *SubscriptionRepository) canAddManagedVolume(
+	tx *gorm.DB,
+	userID uuid.UUID,
+	amountKobo int64,
+) error {
+	sub, err := s.getActiveSubscription(tx, userID)
 	if err != nil {
 		return err
 	}
 
-	periodKey := time.Now().Format("2006-01")
-
-	var usage MonthlyUsage
-	tx := s.db
-	err = tx.Where("user_id = ? AND period_key = ?", userID, periodKey).
-		FirstOrCreate(&usage, MonthlyUsage{
-			UserID:    userID,
-			PeriodKey: periodKey,
-		}).Error
-
+	usage, err := s.getOrCreateMonthlyUsage(tx, userID)
 	if err != nil {
 		return err
 	}
@@ -157,6 +167,62 @@ func (s *SubscriptionRepository) CanAddManagedVolume(
 	}
 
 	return nil
+}
+
+func (s *SubscriptionRepository) ReserveManagedVolume(
+	tx *gorm.DB,
+	userID uuid.UUID,
+	amountKobo int64,
+) error {
+	if tx == nil {
+		return s.db.Transaction(func(tx *gorm.DB) error {
+			return s.ReserveManagedVolume(tx, userID, amountKobo)
+		})
+	}
+
+	if err := s.canAddManagedVolume(tx, userID, amountKobo); err != nil {
+		return err
+	}
+
+	usage, err := s.getOrCreateMonthlyUsage(tx, userID)
+	if err != nil {
+		return err
+	}
+
+	usage.ManagedVolumeKobo += amountKobo
+	return tx.Save(usage).Error
+}
+
+func (s *SubscriptionRepository) getOrCreateMonthlyUsage(
+	tx *gorm.DB,
+	userID uuid.UUID,
+) (*MonthlyUsage, error) {
+	periodKey := time.Now().Format("2006-01")
+
+	var usage MonthlyUsage
+	err := tx.
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("user_id = ? AND period_key = ?", userID, periodKey).
+		First(&usage).Error
+
+	if err == nil {
+		return &usage, nil
+	}
+
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+
+	usage = MonthlyUsage{
+		UserID:    userID,
+		PeriodKey: periodKey,
+	}
+
+	if err := tx.Create(&usage).Error; err != nil {
+		return nil, err
+	}
+
+	return &usage, nil
 }
 
 func (s *SubscriptionRepository) GetPlans() ([]SubscriptionPlan, error) {

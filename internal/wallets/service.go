@@ -3,6 +3,7 @@ package wallets
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,22 +12,35 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	paymentproviders "github.com/kuipid01/salary-vault/internal/platform/payment-providers"
 
 	client "github.com/kuipid01/salary-vault/internal/shared/client/idempotence"
 	"github.com/kuipid01/salary-vault/internal/shared/response"
 	"github.com/kuipid01/salary-vault/internal/shared/security"
+	"github.com/kuipid01/salary-vault/internal/subscription"
 )
 
 type WalletService struct {
 	repo               *WalletRepository
 	payment            paymentproviders.PaymentProvider
 	idempotencyManager *client.IdempotentRequest
+	subRepo            *subscription.SubscriptionRepository
 }
 
-func NewWalletService(repo *WalletRepository, payment paymentproviders.PaymentProvider, idempotencyManager *client.IdempotentRequest) *WalletService {
+func NewWalletService(
+	repo *WalletRepository,
+	payment paymentproviders.PaymentProvider,
+	idempotencyManager *client.IdempotentRequest,
+	subRepo *subscription.SubscriptionRepository,
+) *WalletService {
 
-	return &WalletService{repo: repo, payment: payment, idempotencyManager: idempotencyManager}
+	return &WalletService{
+		repo:               repo,
+		payment:            payment,
+		idempotencyManager: idempotencyManager,
+		subRepo:            subRepo,
+	}
 }
 
 func (svc *WalletService) GetMyWallet(userId string) *response.APIResponse {
@@ -187,6 +201,10 @@ func (s *WalletService) InitiateDeposit(
 		}
 	}
 
+	if err := s.canAcceptDeposit(nil, userId, req.Amount); err != nil {
+		return depositLimitResponse(err)
+	}
+
 	// 1. Move ALL stateful execution inside this function block
 	executionLogic := func() (int, interface{}, error) {
 		APP_ENV := os.Getenv("APP_ENV")
@@ -284,6 +302,62 @@ func namesFromEmail(email string) (string, string) {
 	return strings.Title(parts[0]), strings.Title(parts[1])
 }
 
+func (s *WalletService) canAcceptDeposit(txRepo *WalletRepository, userID string, amountKobo int64) error {
+	userUUID, err := uuid.Parse(userID)
+	if err != nil {
+		return err
+	}
+
+	repo := s.repo
+	if txRepo != nil {
+		repo = txRepo
+	}
+
+	wallet, err := repo.GetWalletByOwnerID(userID)
+	if err != nil {
+		return err
+	}
+
+	currentVaultBalance := wallet.AvailableBalance + wallet.LockedBalance
+	return s.subRepo.CanAddMonthlyVolume(userUUID, currentVaultBalance, amountKobo)
+}
+
+func depositLimitResponse(err error) *response.APIResponse {
+	if errors.Is(err, subscription.ErrSubscriptionRequired) {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Active subscription required",
+			Error:   err,
+		}
+	}
+
+	if errors.Is(err, subscription.ErrPlanLimitReached) {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Maximum vault capacity reached",
+			Error:   err,
+		}
+	}
+
+	return &response.APIResponse{
+		Success: false,
+		Message: "Could not validate deposit limit",
+		Error:   err,
+	}
+}
+
+func depositCreditErrorResponse(message string, err error) *response.APIResponse {
+	if errors.Is(err, subscription.ErrSubscriptionRequired) || errors.Is(err, subscription.ErrPlanLimitReached) {
+		return depositLimitResponse(err)
+	}
+
+	return &response.APIResponse{
+		Success: false,
+		Message: message,
+		Error:   err,
+	}
+}
+
 func (s *WalletService) CreditWallet(reference string, webhookAmount int64) *response.APIResponse {
 	// 1. Validate incoming amount payload baseline
 	if webhookAmount <= 0 {
@@ -333,6 +407,9 @@ func (s *WalletService) CreditWallet(reference string, webhookAmount int64) *res
 	// 5. ATOMIC EXECUTION BLOCK: Execute status switch and wallet credit together
 	// Wrap these steps in a database transaction block inside your repository layer
 	err = s.repo.ExecuteInTransaction(func(txRepo *WalletRepository) error {
+		if err := s.canAcceptDeposit(txRepo, walletdeposit.UserID, webhookAmount); err != nil {
+			return err
+		}
 
 		// A. Update the deposit status inside the transaction scope
 		if _, err := txRepo.UpdateDepositStatus(reference, "success"); err != nil {
@@ -369,6 +446,8 @@ func (s *WalletService) CreditWallet(reference string, webhookAmount int64) *res
 			Reference:     reference,
 			CreatedAt:     now,
 			Source:        "Paystack",
+			SourceID:      walletdeposit.ID,
+			Description:   "Deposit by card",
 		}
 		if _, err := txRepo.LogWalletLedger(walletReq); err != nil {
 
@@ -378,11 +457,7 @@ func (s *WalletService) CreditWallet(reference string, webhookAmount int64) *res
 		return nil
 	})
 	if err != nil {
-		return &response.APIResponse{
-			Success: false,
-			Message: "Failed to securely execute wallet ledger update",
-			Error:   err.Error(),
-		}
+		return depositCreditErrorResponse("Failed to securely execute wallet ledger update", err)
 	}
 
 	updatedDeposit, err := s.repo.GetDepositByReference(reference)
@@ -443,6 +518,10 @@ func (s *WalletService) CreditDedicatedAccountTransfer(reference string, webhook
 	}
 
 	err = s.repo.ExecuteInTransaction(func(txRepo *WalletRepository) error {
+		if err := s.canAcceptDeposit(txRepo, wallet.UserID, webhookAmount); err != nil {
+			return err
+		}
+
 		if _, err := txRepo.CreateDeposit(deposit); err != nil {
 			return err
 		}
@@ -480,11 +559,7 @@ func (s *WalletService) CreditDedicatedAccountTransfer(reference string, webhook
 		return err
 	})
 	if err != nil {
-		return &response.APIResponse{
-			Success: false,
-			Message: "Failed to credit dedicated account transfer",
-			Error:   err.Error(),
-		}
+		return depositCreditErrorResponse("Failed to credit dedicated account transfer", err)
 	}
 
 	return &response.APIResponse{
@@ -561,6 +636,49 @@ func (s *WalletService) GetDepositByReference(reference string) *response.APIRes
 		Data:    deposit,
 	}
 }
+
+func (s *WalletService) DismissDeposit(userID string, reference string) *response.APIResponse {
+	deposit, err := s.repo.GetDepositByReference(reference)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Failed to get deposit",
+			Error:   err.Error(),
+		}
+	}
+
+	if deposit.UserID != userID {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Deposit not found",
+			Error:   "deposit_not_found",
+		}
+	}
+
+	if deposit.Status == "success" {
+		return &response.APIResponse{
+			Success: true,
+			Message: "Deposit already completed",
+			Data:    deposit,
+		}
+	}
+
+	deposit, err = s.repo.UpdateDepositStatus(reference, "dismissed")
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not dismiss deposit",
+			Error:   err.Error(),
+		}
+	}
+
+	return &response.APIResponse{
+		Success: true,
+		Message: "Deposit dismissed",
+		Data:    deposit,
+	}
+}
+
 func (s *WalletService) VerifyDeposit(ctx context.Context, reference string) *response.APIResponse {
 	deposit, err := s.repo.GetDepositByReference(reference)
 	if err != nil {

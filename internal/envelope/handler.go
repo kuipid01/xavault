@@ -6,6 +6,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/kuipid01/salary-vault/internal/shared/response"
+	"github.com/kuipid01/salary-vault/internal/subscription"
 )
 
 type EnvelopeHandler struct {
@@ -245,6 +246,10 @@ func getEnvelopeErrorStatusCode(err interface{}) int {
 		}
 
 		if errors.Is(e, ErrPlanNotDraft) {
+			return http.StatusForbidden
+		}
+
+		if errors.Is(e, subscription.ErrSubscriptionRequired) || errors.Is(e, subscription.ErrPlanLimitReached) {
 			return http.StatusForbidden
 		}
 

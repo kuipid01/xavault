@@ -6,6 +6,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/kuipid01/salary-vault/internal/shared/response"
+	"github.com/kuipid01/salary-vault/internal/subscription"
 )
 
 type PlanHandler struct {
@@ -258,6 +259,10 @@ func getPlanErrorStatusCode(err interface{}) int {
 		}
 
 		if errors.Is(e, ErrPlanNotDraft) || errors.Is(e, ErrPlanAlreadyFinal) {
+			return http.StatusForbidden
+		}
+
+		if errors.Is(e, subscription.ErrSubscriptionRequired) || errors.Is(e, subscription.ErrPlanLimitReached) {
 			return http.StatusForbidden
 		}
 

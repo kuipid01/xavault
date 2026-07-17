@@ -56,8 +56,6 @@ func NewContainer(db *gorm.DB, cfg *config.Config) *Container {
 	idempotencyRepo := client.NewIdempotentRepository(db)
 	idempotencyManager := client.NewIdempotentRequest(idempotencyRepo, true)
 
-	walletModule := wallets.NewWalletModule(db, idempotencyManager, reusableClient)
-
 	planRepo := spendingplans.NewPlanRepository(db)
 	envelopeRepo := envelope.NewEnvelopeRepo(db)
 
@@ -66,6 +64,7 @@ func NewContainer(db *gorm.DB, cfg *config.Config) *Container {
 
 	// --- Subscription ---
 	subRepo := subscription.NewSubscriptionRepository(db)
+	walletModule := wallets.NewWalletModule(db, idempotencyManager, reusableClient, subRepo)
 	paystackProvider := paymentproviders.NewPaystackProvider(reusableClient)
 	subService := subscription.NewSubscriptionService(subRepo, paystackProvider)
 	subHandler := subscription.NewSubscriptionHandler(subService, &userReaderAdapter{repo: userRepo})

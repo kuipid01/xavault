@@ -1,6 +1,7 @@
 package subscription
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/gofiber/fiber/v2"
@@ -43,12 +44,6 @@ func (h *SubscriptionHandler) CreateSubscription(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid user ID"})
 	}
 
-	// Reject if the user already has an active subscription
-	// activeSub, _ := h.service.GetActiveSubscription(userID)
-	// if activeSub != nil {
-	// 	return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "You already have an active subscription"})
-	// }
-
 	var req CreateSubscriptionRequest
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request payload"})
@@ -62,6 +57,12 @@ func (h *SubscriptionHandler) CreateSubscription(c *fiber.Ctx) error {
 
 	result, err := h.service.CreateSubscription(c.Context(), userID, userInfo.Email, &req)
 	if err != nil {
+		if errors.Is(err, ErrPlanNotUpgrade) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+				"error":   "plan_not_upgrade",
+				"message": "You can only upgrade to a higher subscription plan.",
+			})
+		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	fmt.Println("RESPONSE FROM CALL", result)

@@ -175,6 +175,17 @@ func (repo *EnvelopeRepo) CountChildrenTx(tx *gorm.DB, envelopeID string) (int64
 	return count, err
 }
 
+func (repo *EnvelopeRepo) CountActiveByPlanIDTx(tx *gorm.DB, planID string) (int64, error) {
+	var count int64
+
+	err := tx.
+		Model(&Envelope{}).
+		Where("plan_id = ? AND status = ?", planID, EnvelopeStatusActive).
+		Count(&count).Error
+
+	return count, err
+}
+
 func (repo *EnvelopeRepo) UpdateWithTx(tx *gorm.DB, envelope *Envelope) error {
 	return tx.Save(envelope).Error
 }
