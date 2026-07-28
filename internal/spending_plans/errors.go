@@ -14,4 +14,5 @@ var (
 	ErrPlanNotFunded             = errors.New("this plan has not been funded")
 	ErrInsufficientLockedBalance = errors.New("insufficient locked balance")
 	ErrPlanCannotCancel          = errors.New("this plan cannot be cancelled")
+	ErrPlanWithdrawalInProgress  = errors.New("this plan has a withdrawal in progress")
 )

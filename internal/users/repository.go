@@ -5,7 +5,15 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
+
+var (
+	ErrWithdrawalPinNotSet  = errors.New("withdrawal pin is not set")
+	ErrWithdrawalPinInvalid = errors.New("invalid withdrawal pin")
+	ErrWithdrawalPinLocked  = errors.New("withdrawals are locked after two incorrect pin attempts")
 )
 
 type UserRepository struct {
@@ -125,9 +133,54 @@ func (r *UserRepository) UpdateRefreshToken(userID string, refreshToken string) 
 func (r *UserRepository) UpdateWithdrawalPin(userID string, pinHash string) error {
 	return r.db.Model(&User{}).Where("id = ?", userID).Updates(map[string]interface{}{
 		"withdrawal_pin_hash":             pinHash,
+		"withdrawal_pin_failed_attempts":  0,
+		"withdrawal_pin_locked_at":        nil,
 		"withdrawal_pin_reset_otp":        nil,
 		"withdrawal_pin_reset_expires_at": nil,
 	}).Error
+}
+
+// VerifyWithdrawalPin serializes attempts so concurrent requests cannot bypass
+// the two-attempt withdrawal lock.
+func (r *UserRepository) VerifyWithdrawalPin(userID, pin string) error {
+	var verificationErr error
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		var user User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", userID).First(&user).Error; err != nil {
+			return err
+		}
+		if user.WithdrawalPinHash == nil || strings.TrimSpace(*user.WithdrawalPinHash) == "" {
+			return ErrWithdrawalPinNotSet
+		}
+		if user.WithdrawalPinLockedAt != nil || user.WithdrawalPinFailedAttempts >= 2 {
+			verificationErr = ErrWithdrawalPinLocked
+			return nil
+		}
+		if bcrypt.CompareHashAndPassword([]byte(*user.WithdrawalPinHash), []byte(pin)) != nil {
+			attempts := user.WithdrawalPinFailedAttempts + 1
+			updates := map[string]interface{}{"withdrawal_pin_failed_attempts": attempts}
+			if attempts >= 2 {
+				updates["withdrawal_pin_locked_at"] = time.Now()
+			}
+			if err := tx.Model(&User{}).Where("id = ?", userID).Updates(updates).Error; err != nil {
+				return err
+			}
+			if attempts >= 2 {
+				verificationErr = ErrWithdrawalPinLocked
+				return nil
+			}
+			verificationErr = ErrWithdrawalPinInvalid
+			return nil
+		}
+		if user.WithdrawalPinFailedAttempts != 0 {
+			return tx.Model(&User{}).Where("id = ?", userID).Update("withdrawal_pin_failed_attempts", 0).Error
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	return verificationErr
 }
 
 func (r *UserRepository) UpdateWithdrawalPinResetOTP(userID string, otpHash string, expiresAt time.Time) error {

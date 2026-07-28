@@ -1,36 +1,43 @@
 package envelope
 
-import "time"
+import (
+	"time"
+
+	"github.com/kuipid01/salary-vault/internal/funds"
+)
 
 func mapEnvelopeToResponse(
 	envelope *Envelope,
 	allocatedToChildren int64,
 	children []EnvelopeResponse,
+	totals funds.WithdrawalTotals,
 ) EnvelopeResponse {
 	if envelope == nil {
 		return EnvelopeResponse{}
 	}
 
 	return EnvelopeResponse{
-		ID:                   envelope.ID,
-		UserID:               envelope.UserID,
-		PlanID:               envelope.PlanID,
-		ParentEnvelopeID:     envelope.ParentEnvelopeID,
-		Name:                 envelope.Name,
-		Amount:               envelope.Amount,
-		Status:               envelope.Status,
-		UnboxedBalancePolicy: envelope.UnboxedBalancePolicy,
-		StartDate:            formatEnvelopeDate(envelope.StartDate),
-		EndDate:              formatEnvelopeDate(envelope.EndDate),
-		AllocatedToChildren:  allocatedToChildren,
-		UnboxedBalance:       envelope.Amount - allocatedToChildren,
-		Children:             children,
-		CreatedAt:            formatEnvelopeTime(envelope.CreatedAt),
-		UpdatedAt:            formatEnvelopeTime(envelope.UpdatedAt),
+		ID:                      envelope.ID,
+		UserID:                  envelope.UserID,
+		PlanID:                  envelope.PlanID,
+		ParentEnvelopeID:        envelope.ParentEnvelopeID,
+		Name:                    envelope.Name,
+		Amount:                  envelope.Amount,
+		Status:                  envelope.Status,
+		UnboxedBalancePolicy:    envelope.UnboxedBalancePolicy,
+		StartDate:               formatEnvelopeDate(envelope.StartDate),
+		EndDate:                 formatEnvelopeDate(envelope.EndDate),
+		AllocatedToChildren:     allocatedToChildren,
+		UnboxedBalance:          funds.AvailableBalance(envelope.Amount, allocatedToChildren, totals),
+		WithdrawnAmount:         totals.Paid,
+		PendingWithdrawalAmount: totals.Pending,
+		Children:                children,
+		CreatedAt:               formatEnvelopeTime(envelope.CreatedAt),
+		UpdatedAt:               formatEnvelopeTime(envelope.UpdatedAt),
 	}
 }
 
-func buildEnvelopeTree(envelopes []Envelope) []EnvelopeResponse {
+func buildEnvelopeTree(envelopes []Envelope, totalsByEnvelope map[string]funds.WithdrawalTotals) []EnvelopeResponse {
 	childrenByParent := map[string][]Envelope{}
 	topLevel := []Envelope{}
 
@@ -56,7 +63,7 @@ func buildEnvelopeTree(envelopes []Envelope) []EnvelopeResponse {
 			childResponses = append(childResponses, buildNode(child))
 		}
 
-		return mapEnvelopeToResponse(&env, allocatedToChildren, childResponses)
+		return mapEnvelopeToResponse(&env, allocatedToChildren, childResponses, totalsByEnvelope[env.ID])
 	}
 
 	responses := make([]EnvelopeResponse, 0, len(topLevel))

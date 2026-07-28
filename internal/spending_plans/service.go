@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/kuipid01/salary-vault/internal/funds"
 	"github.com/kuipid01/salary-vault/internal/shared/response"
 	"github.com/kuipid01/salary-vault/internal/shared/security"
 	"github.com/kuipid01/salary-vault/internal/subscription"
@@ -18,6 +19,7 @@ type PlanService struct {
 	repository     *PlanRepository
 	walletRepo     *wallets.WalletRepository
 	envelopeReader EnvelopeAllocationReader
+	fundsRepo      *funds.Repository
 	subRepo        *subscription.SubscriptionRepository
 }
 
@@ -25,12 +27,14 @@ func NewPlanService(
 	r *PlanRepository,
 	walletRepo *wallets.WalletRepository,
 	envelopeReader EnvelopeAllocationReader,
+	fundsRepo *funds.Repository,
 	subRepo *subscription.SubscriptionRepository,
 ) *PlanService {
 	return &PlanService{
 		repository:     r,
 		walletRepo:     walletRepo,
 		envelopeReader: envelopeReader,
+		fundsRepo:      fundsRepo,
 		subRepo:        subRepo,
 	}
 }
@@ -139,7 +143,7 @@ func (s *PlanService) CreateDraftPlan(userID string, req CreatePlanRequest) *res
 	return &response.APIResponse{
 		Success: true,
 		Message: "Draft spending plan created successfully",
-		Data:    mapPlanToResponse(plan, 0),
+		Data:    mapPlanToResponse(plan, 0, funds.WithdrawalTotals{}),
 	}
 }
 
@@ -185,7 +189,11 @@ func (s *PlanService) GetMyPlans(userID string, query ListPlansQuery) *response.
 				Error:   err,
 			}
 		}
-		items = append(items, mapPlanToResponse(&plan, topLevelAmount))
+		totals, err := s.fundsRepo.PlanUnboxedTotals(nil, plan.ID, userID)
+		if err != nil {
+			return &response.APIResponse{Success: false, Message: "Could not calculate spending plan balance", Error: err}
+		}
+		items = append(items, mapPlanToResponse(&plan, topLevelAmount, totals))
 	}
 
 	return &response.APIResponse{
@@ -239,10 +247,15 @@ func (s *PlanService) GetPlanByID(userID string, planID string) *response.APIRes
 		}
 	}
 
+	totals, err := s.fundsRepo.PlanUnboxedTotals(nil, plan.ID, userID)
+	if err != nil {
+		return &response.APIResponse{Success: false, Message: "Could not calculate spending plan balance", Error: err}
+	}
+
 	return &response.APIResponse{
 		Success: true,
 		Message: "Spending plan fetched successfully",
-		Data:    mapPlanToResponse(plan, topLevelAmount),
+		Data:    mapPlanToResponse(plan, topLevelAmount, totals),
 	}
 }
 
@@ -373,7 +386,7 @@ func (s *PlanService) UpdateDraftPlan(userID string, planID string, req UpdatePl
 	return &response.APIResponse{
 		Success: true,
 		Message: "Draft spending plan updated successfully",
-		Data:    mapPlanToResponse(plan, 0),
+		Data:    mapPlanToResponse(plan, 0, funds.WithdrawalTotals{}),
 	}
 }
 
@@ -593,7 +606,7 @@ func (s *PlanService) ConfirmPlan(userID string, planID string, req ConfirmPlanR
 	return &response.APIResponse{
 		Success: true,
 		Message: "Spending plan confirmed successfully",
-		Data:    mapPlanToResponse(confirmedPlan, 0),
+		Data:    mapPlanToResponse(confirmedPlan, 0, funds.WithdrawalTotals{}),
 	}
 }
 
@@ -708,15 +721,26 @@ func (s *PlanService) CancelPlan(userID string, planID string, req CancelPlanReq
 				return ErrPlanNotFunded
 			}
 
-			cancellationFee = calculatePlanCancellationFee(plan.Amount)
-			refundedAmount = plan.Amount - cancellationFee
+			withdrawalTotals, err := s.fundsRepo.PlanTotals(tx, plan.ID, userID)
+			if err != nil {
+				return err
+			}
+			if withdrawalTotals.Pending > 0 {
+				return ErrPlanWithdrawalInProgress
+			}
+			remainingPlanFunds := plan.Amount - withdrawalTotals.Paid
+			if remainingPlanFunds < 0 {
+				remainingPlanFunds = 0
+			}
+			cancellationFee = calculatePlanCancellationFee(remainingPlanFunds)
+			refundedAmount = remainingPlanFunds - cancellationFee
 			isFlexibleCancellation = true
 
 			log.Printf(
 				"[CancelPlan] fee calculated user_id=%s plan_id=%s amount=%d cancellation_fee=%d refunded_amount=%d",
 				userID,
 				plan.ID,
-				plan.Amount,
+				remainingPlanFunds,
 				cancellationFee,
 				refundedAmount,
 			)
@@ -725,7 +749,7 @@ func (s *PlanService) CancelPlan(userID string, planID string, req CancelPlanReq
 				tx,
 				userID,
 				plan.WalletID,
-				plan.Amount,
+				remainingPlanFunds,
 				cancellationFee,
 			)
 			if err != nil {
@@ -881,6 +905,10 @@ func (s *PlanService) CancelPlan(userID string, planID string, req CancelPlanReq
 			}
 		}
 
+		if err == ErrPlanWithdrawalInProgress {
+			return &response.APIResponse{Success: false, Message: "Wait for the plan withdrawal to finish before cancelling it", Error: err}
+		}
+
 		return &response.APIResponse{
 			Success: false,
 			Message: "Could not cancel spending plan",
@@ -914,7 +942,7 @@ func (s *PlanService) CancelPlan(userID string, planID string, req CancelPlanReq
 		Success: true,
 		Message: "Spending plan cancelled successfully",
 		Data: CancelPlanResponse{
-			Plan:            mapPlanToResponse(cancelledPlan, 0),
+			Plan:            mapPlanToResponse(cancelledPlan, 0, funds.WithdrawalTotals{}),
 			Wallet:          walletSnapshot,
 			Message:         "Plan cancelled successfully",
 			CancellationFee: cancellationFee,

@@ -32,21 +32,23 @@ type ListPlansQuery struct {
 }
 
 type PlanResponse struct {
-	ID                   string  `json:"id"`
-	UserID               string  `json:"user_id"`
-	WalletID             string  `json:"wallet_id"`
-	Name                 string  `json:"name"`
-	Amount               int64   `json:"amount"`
-	Currency             string  `json:"currency"`
-	Status               string  `json:"status"`
-	UnboxedBalancePolicy string  `json:"unboxed_balance_policy"`
-	StartDate            string  `json:"start_date"`
-	EndDate              string  `json:"end_date"`
-	TopLevelAllocated    int64   `json:"top_level_allocated"`
-	PlanUnboxedBalance   int64   `json:"plan_unboxed_balance"`
-	ConfirmedAt          *string `json:"confirmed_at"`
-	CreatedAt            string  `json:"created_at"`
-	UpdatedAt            string  `json:"updated_at"`
+	ID                      string  `json:"id"`
+	UserID                  string  `json:"user_id"`
+	WalletID                string  `json:"wallet_id"`
+	Name                    string  `json:"name"`
+	Amount                  int64   `json:"amount"`
+	Currency                string  `json:"currency"`
+	Status                  string  `json:"status"`
+	UnboxedBalancePolicy    string  `json:"unboxed_balance_policy"`
+	StartDate               string  `json:"start_date"`
+	EndDate                 string  `json:"end_date"`
+	TopLevelAllocated       int64   `json:"top_level_allocated"`
+	PlanUnboxedBalance      int64   `json:"plan_unboxed_balance"`
+	WithdrawnAmount         int64   `json:"withdrawn_amount"`
+	PendingWithdrawalAmount int64   `json:"pending_withdrawal_amount"`
+	ConfirmedAt             *string `json:"confirmed_at"`
+	CreatedAt               string  `json:"created_at"`
+	UpdatedAt               string  `json:"updated_at"`
 }
 
 type ListPlansResponse struct {

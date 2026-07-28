@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"time"
 )
 
 type BrevoMailer struct {
 	APIKey      string
 	SenderName  string
 	SenderEmail string
+	Client      *http.Client
 }
 
 func NewBrevoMailer() *BrevoMailer {
@@ -20,6 +22,7 @@ func NewBrevoMailer() *BrevoMailer {
 		APIKey:      os.Getenv("BREVO_API_KEY"),
 		SenderName:  os.Getenv("BREVO_SENDER_NAME"),
 		SenderEmail: os.Getenv("BREVO_SENDER_EMAIL"),
+		Client:      &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
@@ -82,9 +85,7 @@ func (b *BrevoMailer) sendHTMLMail(
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("api-key", b.APIKey)
 
-	client := &http.Client{}
-
-	res, err := client.Do(req)
+	res, err := b.Client.Do(req)
 	if err != nil {
 		return err
 	}

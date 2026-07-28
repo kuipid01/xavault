@@ -8,8 +8,10 @@ import (
 	bankaccounts "github.com/kuipid01/salary-vault/internal/bank_accounts"
 	"github.com/kuipid01/salary-vault/internal/config"
 	"github.com/kuipid01/salary-vault/internal/envelope"
+	"github.com/kuipid01/salary-vault/internal/funds"
 	"github.com/kuipid01/salary-vault/internal/platform/mail"
 	paymentproviders "github.com/kuipid01/salary-vault/internal/platform/payment-providers"
+	"github.com/kuipid01/salary-vault/internal/reconciliation"
 	clientNetwork "github.com/kuipid01/salary-vault/internal/shared/client"
 	client "github.com/kuipid01/salary-vault/internal/shared/client/idempotence"
 	spendingplans "github.com/kuipid01/salary-vault/internal/spending_plans"
@@ -40,15 +42,18 @@ func (a *userReaderAdapter) FindById(id string) (subscription.UserInfo, error) {
 }
 
 type Container struct {
-	Auth             *auth.Module
-	Wallets          *wallets.WalletModule
-	WebhookHND       *webhooks.WebhookHandler
-	PlansHND         *spendingplans.PlanHandler
-	EnvelopHND       *envelope.EnvelopeHandler
-	WithdrawalModule *withdrawals.WithdrawalModule
-	BankAccounts     *bankaccounts.Module
-	Waitlist         *waitlist.Module
-	SubscriptionHND  *subscription.SubscriptionHandler
+	Auth              *auth.Module
+	Wallets           *wallets.WalletModule
+	WebhookHND        *webhooks.WebhookHandler
+	PlansHND          *spendingplans.PlanHandler
+	EnvelopHND        *envelope.EnvelopeHandler
+	WithdrawalModule  *withdrawals.WithdrawalModule
+	BankAccounts      *bankaccounts.Module
+	Waitlist          *waitlist.Module
+	SubscriptionHND   *subscription.SubscriptionHandler
+	ReconciliationHND *reconciliation.Handler
+	ReconciliationSVC *reconciliation.Service
+	db                *gorm.DB
 }
 
 func NewContainer(db *gorm.DB, cfg *config.Config) *Container {
@@ -58,6 +63,7 @@ func NewContainer(db *gorm.DB, cfg *config.Config) *Container {
 
 	planRepo := spendingplans.NewPlanRepository(db)
 	envelopeRepo := envelope.NewEnvelopeRepo(db)
+	fundsRepo := funds.NewRepository(db)
 
 	// --- Shared user repo (used by subscriptions, withdrawals) ---
 	userRepo := users.NewUserRepository(db)
@@ -74,29 +80,34 @@ func NewContainer(db *gorm.DB, cfg *config.Config) *Container {
 		planRepo,
 		walletModule.Repo,
 		envelopeRepo,
+		fundsRepo,
 		subRepo,
 	)
 	planHandler := spendingplans.NewPlanHandler(planService)
 
-	envelopeService := envelope.NewEnvelopeService(envelopeRepo, planRepo, subRepo)
+	envelopeService := envelope.NewEnvelopeService(envelopeRepo, planRepo, subRepo, fundsRepo)
 	envelopeHandler := envelope.NewEnvelopeHandler(envelopeService)
 
 	bankAccountsModule := bankaccounts.NewModule(db, reusableClient)
 	withdrawaModule := withdrawals.NewWithdrawalModule(
 		db, idempotencyManager, planRepo, envelopeRepo,
-		walletModule.Repo, bankAccountsModule.Repo, userRepo, reusableClient,
+		walletModule.Repo, bankAccountsModule.Repo, userRepo, reusableClient, fundsRepo,
 	)
 	mailer := mail.NewBrevoMailer()
+	reconciliationService := reconciliation.NewService(db, paystackProvider, walletModule.Svc, withdrawaModule.Svc)
 
 	return &Container{
-		Auth:             auth.NewModule(db, walletModule.Svc, mailer),
-		Wallets:          walletModule,
-		WebhookHND:       webhooks.NewWebhookHandler(walletModule.Svc, withdrawaModule.Svc, subService),
-		PlansHND:         planHandler,
-		EnvelopHND:       envelopeHandler,
-		WithdrawalModule: withdrawaModule,
-		BankAccounts:     bankAccountsModule,
-		Waitlist:         waitlist.NewModule(db),
-		SubscriptionHND:  subHandler,
+		Auth:              auth.NewModule(db, walletModule.Svc, mailer),
+		Wallets:           walletModule,
+		WebhookHND:        webhooks.NewWebhookHandler(db, walletModule.Svc, withdrawaModule.Svc, subService),
+		PlansHND:          planHandler,
+		EnvelopHND:        envelopeHandler,
+		WithdrawalModule:  withdrawaModule,
+		BankAccounts:      bankAccountsModule,
+		Waitlist:          waitlist.NewModule(db),
+		SubscriptionHND:   subHandler,
+		ReconciliationHND: reconciliation.NewHandler(reconciliationService),
+		ReconciliationSVC: reconciliationService,
+		db:                db,
 	}
 }

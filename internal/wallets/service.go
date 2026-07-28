@@ -359,7 +359,6 @@ func depositCreditErrorResponse(message string, err error) *response.APIResponse
 }
 
 func (s *WalletService) CreditWallet(reference string, webhookAmount int64) *response.APIResponse {
-	// 1. Validate incoming amount payload baseline
 	if webhookAmount <= 0 {
 		return &response.APIResponse{
 			Success: false,
@@ -368,94 +367,71 @@ func (s *WalletService) CreditWallet(reference string, webhookAmount int64) *res
 		}
 	}
 
-	// 2. Fetch the existing deposit reference audit record
-	walletdeposit, err := s.repo.GetDepositByReference(reference)
-	if err != nil {
-		return &response.APIResponse{
-			Success: false,
-			Message: "Deposit reference records not found",
-			Error:   err.Error(),
+	var walletdeposit *WalletDeposit
+	err := s.repo.ExecuteInTransaction(func(txRepo *WalletRepository) error {
+		deposit, err := txRepo.GetDepositByReferenceForUpdate(reference)
+		if err != nil {
+			return err
 		}
-	}
-
-	// 3. Prevent Double Crediting (Idempotency Check)
-	if walletdeposit.Status == "success" {
-		return &response.APIResponse{
-			Success: false,
-			Message: "Deposit has already been completed processed",
-			Error:   "deposit_already_processed",
+		walletdeposit = deposit
+		if deposit.Status == "success" {
+			return ErrDepositAlreadyProcessed
 		}
-	}
-
-	// 4. CRITICAL FINANCIAL CHECK: Compare webhook amount against original intent
-	// Paystack/Flutterwave report in minor units (e.g., Kobo), verify they align perfectly
-	if walletdeposit.Amount != webhookAmount {
-		// Log this to your DB or log manager immediately for security audits
-		log.Printf("⚠️ SECURITY ALERT: Mismatched deposit amount detected for Ref %s. Expected: %d, Got: %d",
-			reference, walletdeposit.Amount, webhookAmount)
-
-		// Update status to flag an investigation rather than failing silently
-		_, _ = s.repo.UpdateDepositStatus(reference, "amount_mismatch_flagged")
-
-		return &response.APIResponse{
-			Success: false,
-			Message: "Transaction amount mismatch detected. Processing rejected.",
-			Error:   "amount_mismatch_error",
+		if deposit.Amount != webhookAmount {
+			return ErrDepositAmountMismatch
 		}
-	}
 
-	// 5. ATOMIC EXECUTION BLOCK: Execute status switch and wallet credit together
-	// Wrap these steps in a database transaction block inside your repository layer
-	err = s.repo.ExecuteInTransaction(func(txRepo *WalletRepository) error {
-		if err := s.canAcceptDeposit(txRepo, walletdeposit.UserID, webhookAmount); err != nil {
+		wallet, err := txRepo.GetWalletByOwnerIDForUpdate(deposit.UserID)
+		if err != nil {
+			return err
+		}
+		if err := s.canAcceptDeposit(txRepo, deposit.UserID, webhookAmount); err != nil {
 			return err
 		}
 
-		// A. Update the deposit status inside the transaction scope
+		balanceBefore := wallet.LedgerBalance
+		wallet.AvailableBalance += webhookAmount
+		wallet.LedgerBalance += webhookAmount
+
+		if _, err := txRepo.Update(wallet); err != nil {
+			return err
+		}
 		if _, err := txRepo.UpdateDepositStatus(reference, "success"); err != nil {
 			return err
 		}
 
-		// B. Fetch the wallet record with an exclusive lock
-		wallet, err := txRepo.GetWalletByOwnerID(walletdeposit.UserID)
-		if err != nil {
-			return err
-		}
-
-		balanceBefore := wallet.AvailableBalance
-		// C. Credit the mathematical balances safely
-		wallet.AvailableBalance += webhookAmount
-		wallet.LedgerBalance += webhookAmount
-
-		// D. Commit changes down to persistent storage
-		if _, err := txRepo.Update(wallet); err != nil {
-			return err
-		}
-		// log in ledger
 		id := security.GenateUniqueID()
 		now := time.Now()
 		walletReq := &WalletLedger{
 			ID:            id,
 			Amount:        webhookAmount,
-			UserID:        walletdeposit.UserID,
-			WalletID:      walletdeposit.WalletID,
-			Currency:      walletdeposit.Currency,
+			UserID:        deposit.UserID,
+			WalletID:      deposit.WalletID,
+			Currency:      deposit.Currency,
 			Type:          "credit",
 			BalanceBefore: balanceBefore,
-			BalanceAfter:  wallet.AvailableBalance,
+			BalanceAfter:  wallet.LedgerBalance,
 			Reference:     reference,
 			CreatedAt:     now,
 			Source:        "Paystack",
-			SourceID:      walletdeposit.ID,
+			SourceID:      deposit.ID,
 			Description:   "Deposit by card",
 		}
-		if _, err := txRepo.LogWalletLedger(walletReq); err != nil {
-
-			return err
-		}
-
-		return nil
+		_, err = txRepo.LogWalletLedger(walletReq)
+		return err
 	})
+	if errors.Is(err, ErrDepositAlreadyProcessed) {
+		return &response.APIResponse{Success: true, Message: "Deposit already completed", Data: walletdeposit}
+	}
+	if errors.Is(err, ErrDepositAmountMismatch) {
+		expected := int64(0)
+		if walletdeposit != nil {
+			expected = walletdeposit.Amount
+		}
+		log.Printf("[DEPOSIT][AMOUNT_MISMATCH] reference=%s expected=%d received=%d", reference, expected, webhookAmount)
+		_, _ = s.repo.UpdateDepositStatus(reference, "amount_mismatch_flagged")
+		return &response.APIResponse{Success: false, Message: "Transaction amount mismatch detected", Error: "amount_mismatch_error"}
+	}
 	if err != nil {
 		return depositCreditErrorResponse("Failed to securely execute wallet ledger update", err)
 	}
@@ -485,9 +461,9 @@ func (s *WalletService) CreditDedicatedAccountTransfer(reference string, webhook
 	if err == nil && existingDeposit != nil {
 		if existingDeposit.Status == "success" {
 			return &response.APIResponse{
-				Success: false,
+				Success: true,
 				Message: "Deposit has already been processed",
-				Error:   "deposit_already_processed",
+				Data:    existingDeposit,
 			}
 		}
 
@@ -526,12 +502,12 @@ func (s *WalletService) CreditDedicatedAccountTransfer(reference string, webhook
 			return err
 		}
 
-		wallet, err := txRepo.GetWalletByDedicatedAccountNumber(accountNumber)
+		wallet, err := txRepo.GetWalletByDedicatedAccountNumberForUpdate(accountNumber)
 		if err != nil {
 			return err
 		}
 
-		balanceBefore := wallet.AvailableBalance
+		balanceBefore := wallet.LedgerBalance
 		wallet.AvailableBalance += webhookAmount
 		wallet.LedgerBalance += webhookAmount
 
@@ -547,7 +523,7 @@ func (s *WalletService) CreditDedicatedAccountTransfer(reference string, webhook
 			Currency:      wallet.Currency,
 			Type:          "credit",
 			BalanceBefore: balanceBefore,
-			BalanceAfter:  wallet.AvailableBalance,
+			BalanceAfter:  wallet.LedgerBalance,
 			Reference:     reference,
 			CreatedAt:     now,
 			Source:        "Paystack Dedicated Account",
@@ -620,7 +596,7 @@ func (s *WalletService) GetMyWalletLedger(userId string) *response.APIResponse {
 		Data:    ledger,
 	}
 }
-func (s *WalletService) GetDepositByReference(reference string) *response.APIResponse {
+func (s *WalletService) GetDepositByReference(userID, reference string) *response.APIResponse {
 	deposit, err := s.repo.GetDepositByReference(reference)
 	if err != nil {
 		return &response.APIResponse{
@@ -628,6 +604,9 @@ func (s *WalletService) GetDepositByReference(reference string) *response.APIRes
 			Message: "Failed to get deposit",
 			Error:   err.Error(),
 		}
+	}
+	if deposit.UserID != userID {
+		return &response.APIResponse{Success: false, Message: "Deposit not found", Error: "deposit_not_found"}
 	}
 
 	return &response.APIResponse{
@@ -679,7 +658,7 @@ func (s *WalletService) DismissDeposit(userID string, reference string) *respons
 	}
 }
 
-func (s *WalletService) VerifyDeposit(ctx context.Context, reference string) *response.APIResponse {
+func (s *WalletService) VerifyDeposit(ctx context.Context, userID, reference string) *response.APIResponse {
 	deposit, err := s.repo.GetDepositByReference(reference)
 	if err != nil {
 		return &response.APIResponse{
@@ -687,6 +666,9 @@ func (s *WalletService) VerifyDeposit(ctx context.Context, reference string) *re
 			Message: "Failed to get deposit",
 			Error:   err.Error(),
 		}
+	}
+	if deposit.UserID != userID {
+		return &response.APIResponse{Success: false, Message: "Deposit not found", Error: "deposit_not_found"}
 	}
 
 	if deposit.Status == "success" {

@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"time"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/kuipid01/salary-vault/internal/shared/security"
 	"golang.org/x/crypto/bcrypt"
@@ -45,21 +47,23 @@ func RemoveAuthCookies(c *fiber.Ctx) {
 	c.Cookie(&fiber.Cookie{
 		Name:     "access_token",
 		Value:    "",
-		HTTPOnly: false,
+		HTTPOnly: true,
 		Secure:   security.IsProduction(),
 		SameSite: "Lax",
 		Path:     "/",
-		MaxAge:   15 * 60,
+		MaxAge:   -1,
+		Expires:  time.Unix(1, 0),
 	})
 
 	c.Cookie(&fiber.Cookie{
 		Name:     "refresh_token",
 		Value:    "",
-		HTTPOnly: false,
+		HTTPOnly: true,
 		Secure:   security.IsProduction(),
 		SameSite: "Lax",
 		Path:     "/",
-		MaxAge:   7 * 24 * 60 * 60,
+		MaxAge:   -1,
+		Expires:  time.Unix(1, 0),
 	})
 }
 

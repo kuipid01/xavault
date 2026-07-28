@@ -1,6 +1,7 @@
 package webhooks
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha512"
 	"encoding/hex"
@@ -8,20 +9,24 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/kuipid01/salary-vault/internal/subscription"
 	"github.com/kuipid01/salary-vault/internal/wallets"
 	"github.com/kuipid01/salary-vault/internal/withdrawals"
+	"gorm.io/gorm"
 )
 
 type WebhookHandler struct {
 	walletService       *wallets.WalletService
 	withdrawalService   *withdrawals.WithdrawalService
 	subscriptionService *subscription.SubscriptionService
+	eventStore          *EventStore
 }
 
 func NewWebhookHandler(
+	db *gorm.DB,
 	ws *wallets.WalletService,
 	withdrawalService *withdrawals.WithdrawalService,
 	subscriptionService *subscription.SubscriptionService,
@@ -30,6 +35,7 @@ func NewWebhookHandler(
 		walletService:       ws,
 		withdrawalService:   withdrawalService,
 		subscriptionService: subscriptionService,
+		eventStore:          NewEventStore(db),
 	}
 }
 
@@ -53,18 +59,72 @@ func (h *WebhookHandler) PaystackWebhook(c *fiber.Ctx) error {
 
 	log.Printf("[PAYSTACK_WEBHOOK][SIGNATURE_VALID] payload_size=%d", len(payload))
 
-	if err := h.ExtractAndProcessEvent(string(payload)); err != nil {
-		log.Printf("[PAYSTACK_WEBHOOK][PROCESS_ERROR] error=%v payload=%s",
-			err,
-			string(payload),
-		)
-
-		return c.Status(fiber.StatusBadRequest).SendString("Webhook processing failed")
+	event, err := NewPaystackEvent(payload)
+	if err != nil {
+		log.Printf("[PAYSTACK_WEBHOOK][INVALID_EVENT] error=%v", err)
+		return c.Status(fiber.StatusBadRequest).SendString("Invalid webhook payload")
+	}
+	inserted, err := h.eventStore.Receive(event)
+	if err != nil {
+		log.Printf("[PAYSTACK_WEBHOOK][PERSIST_ERROR] event_id=%s error=%v", event.ProviderEventID, err)
+		return c.Status(fiber.StatusServiceUnavailable).SendString("Webhook persistence failed")
+	}
+	if !inserted {
+		log.Printf("[PAYSTACK_WEBHOOK][DUPLICATE] event_id=%s", event.ProviderEventID)
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{"status": "already_received"})
+	}
+	if err := h.processStoredEvent(event.ID); err != nil {
+		// The payload is durable; acknowledge it and let the recovery worker
+		// retry so provider redelivery is not the only recovery mechanism.
+		log.Printf("[PAYSTACK_WEBHOOK][PROCESS_DEFERRED] event_id=%s error=%v", event.ProviderEventID, err)
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{"status": "accepted_for_retry"})
 	}
 
 	log.Printf("[PAYSTACK_WEBHOOK][ACKNOWLEDGED]")
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"status": "acknowledged"})
+}
+
+func (h *WebhookHandler) processStoredEvent(id string) error {
+	event, claimed, err := h.eventStore.Claim(id)
+	if err != nil || !claimed {
+		return err
+	}
+	if err := h.ExtractAndProcessEvent(event.Payload); err != nil {
+		if markErr := h.eventStore.MarkFailed(event, err); markErr != nil {
+			return fmt.Errorf("process error: %v; failed to persist retry: %w", err, markErr)
+		}
+		return err
+	}
+	return h.eventStore.MarkProcessed(event.ID)
+}
+
+// StartRecoveryWorker retries durable webhook events. Stop it by cancelling ctx.
+func (h *WebhookHandler) StartRecoveryWorker(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				events, err := h.eventStore.Due(50)
+				if err != nil {
+					log.Printf("[PAYSTACK_WEBHOOK][RECOVERY_QUERY_ERROR] error=%v", err)
+					continue
+				}
+				for i := range events {
+					if err := h.processStoredEvent(events[i].ID); err != nil {
+						log.Printf("[PAYSTACK_WEBHOOK][RECOVERY_RETRY_FAILED] event_id=%s error=%v", events[i].ProviderEventID, err)
+					}
+				}
+			}
+		}
+	}()
 }
 
 func isValidPaystackSignature(payload []byte, signature string) bool {
@@ -133,6 +193,8 @@ func (h *WebhookHandler) ExtractAndProcessEvent(bodyText string) error {
 		return fmt.Errorf("failed to parse base envelope: %w", err)
 	}
 
+	log.Printf("[PAYSTACK_WEBHOOK][EVENT] event=%s", envelope.Event)
+
 	switch envelope.Event {
 	case "charge.success":
 		var chargeData ChargeSuccessData
@@ -151,6 +213,8 @@ func (h *WebhookHandler) ExtractAndProcessEvent(bodyText string) error {
 				chargeData.Metadata.UserID,
 				chargeData.Metadata.PlanID,
 				chargeData.Reference,
+				chargeData.Amount,
+				chargeData.Currency,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to activate subscription: %w", err)
@@ -166,13 +230,19 @@ func (h *WebhookHandler) ExtractAndProcessEvent(bodyText string) error {
 		}
 
 		if chargeData.DedicatedAccount.AccountNumber != "" {
-			h.walletService.CreditDedicatedAccountTransfer(
+			result := h.walletService.CreditDedicatedAccountTransfer(
 				chargeData.Reference,
 				chargeData.Amount,
 				chargeData.DedicatedAccount.AccountNumber,
 			)
+			if result.Error != nil {
+				return fmt.Errorf("failed to credit dedicated account deposit: %v", result.Error)
+			}
 		} else {
-			h.walletService.CreditWallet(chargeData.Reference, chargeData.Amount)
+			result := h.walletService.CreditWallet(chargeData.Reference, chargeData.Amount)
+			if result.Error != nil {
+				return fmt.Errorf("failed to credit wallet deposit: %v", result.Error)
+			}
 		}
 
 	case "transfer.success":
@@ -180,6 +250,11 @@ func (h *WebhookHandler) ExtractAndProcessEvent(bodyText string) error {
 		if err := json.Unmarshal(envelope.Data, &transferData); err != nil {
 			return fmt.Errorf("failed to parse transfer.success data: %w", err)
 		}
+
+		log.Printf("[PAYSTACK_WEBHOOK][TRANSFER_SUCCESS] reference=%s status=%s",
+			transferData.Reference,
+			transferData.Status,
+		)
 
 		result := h.withdrawalService.CompleteProviderWithdrawal(
 			transferData.Reference,
@@ -194,6 +269,13 @@ func (h *WebhookHandler) ExtractAndProcessEvent(bodyText string) error {
 		if err := json.Unmarshal(envelope.Data, &transferData); err != nil {
 			return fmt.Errorf("failed to parse %s data: %w", envelope.Event, err)
 		}
+
+		log.Printf("[PAYSTACK_WEBHOOK][TRANSFER_FAILED] event=%s reference=%s status=%s reason=%s",
+			envelope.Event,
+			transferData.Reference,
+			transferData.Status,
+			transferData.Reason,
+		)
 
 		result := h.withdrawalService.FailProviderWithdrawal(
 			transferData.Reference,

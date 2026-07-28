@@ -131,21 +131,27 @@ func (h *AuthHandler) ResetPassword(c *fiber.Ctx) error {
 	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
 }
 func (h *AuthHandler) Logout(c *fiber.Ctx) error {
-	var req ResetPasswordRequest
-
-	if err := c.BodyParser(&req); err != nil {
-		return response.Error(c, fiber.StatusBadRequest, "Invalid request", err)
+	var req RefreshTokenRequest
+	_ = c.BodyParser(&req)
+	if req.RefreshToken == "" {
+		req.RefreshToken = c.Cookies("refresh_token")
 	}
-
 	result := h.authService.Logout(req)
-	if result.Data != nil {
-
-		RemoveAuthCookies(c)
-	}
+	RemoveAuthCookies(c)
 	if result.Error != nil {
 		return response.Error(c, fiber.StatusBadRequest, result.Message, result.Error)
 	}
 
+	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
+}
+
+func (h *AuthHandler) LogoutAllDevices(c *fiber.Ctx) error {
+	userID, _ := c.Locals("user_id").(string)
+	result := h.authService.LogoutAllDevices(userID)
+	RemoveAuthCookies(c)
+	if result.Error != nil {
+		return response.Error(c, fiber.StatusInternalServerError, result.Message, result.Error)
+	}
 	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
 }
 

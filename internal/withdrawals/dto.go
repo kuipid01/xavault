@@ -48,6 +48,9 @@ type PreviewWithdrawalResponse struct {
 
 type ListWithdrawalsResponse struct {
 	Items []WithdrawalResponse `json:"items"`
+	Page  int                  `json:"page"`
+	Limit int                  `json:"limit"`
+	Total int64                `json:"total"`
 }
 
 type WalletSnapshotDTO struct {

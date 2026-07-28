@@ -9,9 +9,11 @@ type EventEnvelope struct {
 }
 
 type ChargeSuccessData struct {
+	ID        int64  `json:"id"`
 	Amount    int64  `json:"amount"`
 	Reference string `json:"reference"`
 	Status    string `json:"status"`
+	Currency  string `json:"currency"`
 	Customer  struct {
 		Email string `json:"email"`
 	} `json:"customer"`
@@ -22,6 +24,7 @@ type ChargeSuccessData struct {
 }
 
 type TransferEventData struct {
+	ID           int64  `json:"id"`
 	Reference    string `json:"reference"`
 	Status       string `json:"status"`
 	Reason       string `json:"reason"`

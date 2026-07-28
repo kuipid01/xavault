@@ -27,6 +27,8 @@ type User struct {
 	PasswordResetTokenExpiresAt *time.Time `json:"password_reset_token_expires_at"`
 	RefreshToken                *string    `json:"refresh_token"`
 	WithdrawalPinHash           *string    `json:"-"`
+	WithdrawalPinFailedAttempts int        `json:"-" gorm:"not null;default:0"`
+	WithdrawalPinLockedAt       *time.Time `json:"-"`
 	WithdrawalPinResetOTP       *string    `json:"-"`
 	WithdrawalPinResetExpiresAt *time.Time `json:"-"`
 	CreatedAt                   time.Time  `json:"created_at"`

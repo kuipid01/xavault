@@ -1,6 +1,8 @@
 package withdrawals
 
 import (
+	"strconv"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/kuipid01/salary-vault/internal/shared/response"
 )
@@ -85,6 +87,22 @@ func (h *WithdrawalHandler) GetPlanWithdrawals(c *fiber.Ctx) error {
 	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
 }
 
+func (h *WithdrawalHandler) GetUserWithdrawals(c *fiber.Ctx) error {
+	userID, ok := c.Locals("user_id").(string)
+	if !ok || userID == "" {
+		return response.Error(c, fiber.StatusUnauthorized, "Unauthorized", "unauthorized")
+	}
+
+	page, _ := strconv.Atoi(c.Query("page", "1"))
+	limit, _ := strconv.Atoi(c.Query("limit", "50"))
+	result := h.svc.GetUserWithdrawals(userID, page, limit)
+	if result.Error != nil {
+		return response.Error(c, getWithdrawalStatusCode(result.Error), result.Message, result.Error)
+	}
+
+	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
+}
+
 func (h *WithdrawalHandler) GetWithdrawalByID(c *fiber.Ctx) error {
 	userID, ok := c.Locals("user_id").(string)
 	if !ok || userID == "" {
@@ -151,6 +169,9 @@ func getWithdrawalStatusCode(err interface{}) int {
 
 	case ErrInvalidWithdrawalPin:
 		return fiber.StatusUnauthorized
+
+	case ErrWithdrawalPinLocked:
+		return fiber.StatusLocked
 
 	default:
 		return fiber.StatusBadRequest

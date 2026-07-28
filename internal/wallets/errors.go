@@ -7,4 +7,6 @@ var (
 	ErrInvalidWalletAmount       = errors.New("invalid wallet amount")
 	ErrInsufficientWalletBalance = errors.New("insufficient wallet balance")
 	ErrInsufficientLockedBalance = errors.New("insufficient locked balance")
+	ErrDepositAlreadyProcessed   = errors.New("deposit already processed")
+	ErrDepositAmountMismatch     = errors.New("deposit amount mismatch")
 )

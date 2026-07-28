@@ -115,7 +115,7 @@ func (repo *EnvelopeRepo) SumTopLevelEnvelopeAmountExcludingTx(
 ) (int64, error) {
 	var total int64
 
-	err := tx.
+	err := repo.dbOrTx(tx).
 		Model(&Envelope{}).
 		Where("plan_id = ? AND parent_envelope_id IS NULL AND id <> ?", planID, excludedEnvelopeID).
 		Select("COALESCE(SUM(amount), 0)").
@@ -139,7 +139,7 @@ func (repo *EnvelopeRepo) SumChildEnvelopeAmount(parentEnvelopeID string) (int64
 func (repo *EnvelopeRepo) SumChildEnvelopeAmountTx(tx *gorm.DB, parentEnvelopeID string) (int64, error) {
 	var total int64
 
-	err := tx.
+	err := repo.dbOrTx(tx).
 		Model(&Envelope{}).
 		Where("parent_envelope_id = ?", parentEnvelopeID).
 		Select("COALESCE(SUM(amount), 0)").

@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"os"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
@@ -15,33 +16,40 @@ func Protected(jwtSecret string) fiber.Handler {
 
 		var tokenString string
 
-		if accessToken != "" {
-			tokenString = strings.TrimSpace(accessToken)
-		} else {
-			if authHeader == "" {
-				return response.Error(c, fiber.StatusUnauthorized, "Authorization header is required", "missing_authorization_header")
-			}
-
+		if authHeader != "" {
 			if !strings.HasPrefix(authHeader, "Bearer ") {
 				return response.Error(c, fiber.StatusUnauthorized, "Invalid authorization format", "invalid_authorization_format")
 			}
-
 			tokenString = strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+		} else {
+			if accessToken == "" {
+				return response.Error(c, fiber.StatusUnauthorized, "Authorization header is required", "missing_authorization_header")
+			}
+			tokenString = strings.TrimSpace(accessToken)
 		}
 
 		if tokenString == "" {
 			return response.Error(c, fiber.StatusUnauthorized, "Token is required", "missing_token")
 		}
 
-		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			if token.Method != jwt.SigningMethodHS256 {
-				return nil, jwt.ErrTokenSignatureInvalid
+		secrets := []string{jwtSecret}
+		if previous := strings.TrimSpace(os.Getenv("JWT_ACCESS_SECRET_PREVIOUS")); previous != "" && previous != jwtSecret {
+			secrets = append(secrets, previous)
+		}
+		var token *jwt.Token
+		var err error
+		for _, secret := range secrets {
+			token, err = jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+				if token.Method != jwt.SigningMethodHS256 {
+					return nil, jwt.ErrTokenSignatureInvalid
+				}
+				return []byte(secret), nil
+			})
+			if err == nil && token.Valid {
+				break
 			}
-
-			return []byte(jwtSecret), nil
-		})
-
-		if err != nil || !token.Valid {
+		}
+		if err != nil || token == nil || !token.Valid {
 			return response.Error(c, fiber.StatusUnauthorized, "Invalid or expired token", "invalid_token")
 		}
 

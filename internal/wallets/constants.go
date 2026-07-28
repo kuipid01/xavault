@@ -3,6 +3,7 @@ package wallets
 const (
 	WalletLedgerTypeDebit                 = "debit"
 	WalletLedgerTypeCredit                = "credit"
+	WalletLedgerTypeLock                  = "lock"
 	WalletLedgerTypeUnlock                = "unlock"
 	WalletLedgerTypeRefund                = "refund"
 	WalletLedgerTypeCancel                = "cancel"

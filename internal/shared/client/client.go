@@ -56,8 +56,6 @@ func (c *ReusableClient) DoRequest(
 	start := time.Now()
 
 	var bodyReader io.Reader
-	var requestBodyForLog string
-
 	if reqBody != nil {
 		jsonData, err := json.Marshal(reqBody)
 		if err != nil {
@@ -72,7 +70,6 @@ func (c *ReusableClient) DoRequest(
 		}
 
 		bodyReader = bytes.NewBuffer(jsonData)
-		requestBodyForLog = string(jsonData)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, requestURL, bodyReader)
@@ -95,11 +92,11 @@ func (c *ReusableClient) DoRequest(
 	}
 
 	log.Printf(
-		"[HTTP_CLIENT][REQUEST_START] method=%s url=%s headers=%v body=%s",
+		"[HTTP_CLIENT][REQUEST_START] method=%s url=%s headers=%v body_present=%v",
 		method,
 		requestURL,
 		safeHeaders(req.Header),
-		requestBodyForLog,
+		reqBody != nil,
 	)
 
 	resp, err := c.httpClient.Do(req)
@@ -136,22 +133,22 @@ func (c *ReusableClient) DoRequest(
 	responseBody := string(bodyBytes)
 
 	log.Printf(
-		"[HTTP_CLIENT][RESPONSE] method=%s url=%s status=%d duration=%s body=%s",
+		"[HTTP_CLIENT][RESPONSE] method=%s url=%s status=%d duration=%s body_size=%d",
 		method,
 		requestURL,
 		resp.StatusCode,
 		duration,
-		responseBody,
+		len(bodyBytes),
 	)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		log.Printf(
-			"[HTTP_CLIENT][NON_2XX] method=%s url=%s status=%d duration=%s body=%s",
+			"[HTTP_CLIENT][NON_2XX] method=%s url=%s status=%d duration=%s body_size=%d",
 			method,
 			requestURL,
 			resp.StatusCode,
 			duration,
-			responseBody,
+			len(bodyBytes),
 		)
 
 		return parseExternalAPIError(resp.StatusCode, responseBody)
@@ -160,12 +157,12 @@ func (c *ReusableClient) DoRequest(
 	if resTarget != nil && len(bodyBytes) > 0 {
 		if err := json.Unmarshal(bodyBytes, resTarget); err != nil {
 			log.Printf(
-				"[HTTP_CLIENT][DECODE_ERROR] method=%s url=%s status=%d duration=%s body=%s error=%v",
+				"[HTTP_CLIENT][DECODE_ERROR] method=%s url=%s status=%d duration=%s body_size=%d error=%v",
 				method,
 				requestURL,
 				resp.StatusCode,
 				duration,
-				responseBody,
+				len(bodyBytes),
 				err,
 			)
 

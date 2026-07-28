@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/kuipid01/salary-vault/internal/funds"
 	"github.com/kuipid01/salary-vault/internal/shared/response"
 	"github.com/kuipid01/salary-vault/internal/shared/security"
 	spendingplans "github.com/kuipid01/salary-vault/internal/spending_plans"
@@ -14,20 +15,23 @@ import (
 )
 
 type EnvelopeService struct {
-	repo     *EnvelopeRepo
-	planRepo *spendingplans.PlanRepository
-	subRepo  *subscription.SubscriptionRepository
+	repo      *EnvelopeRepo
+	planRepo  *spendingplans.PlanRepository
+	subRepo   *subscription.SubscriptionRepository
+	fundsRepo *funds.Repository
 }
 
 func NewEnvelopeService(
 	repo *EnvelopeRepo,
 	planRepo *spendingplans.PlanRepository,
 	subRepo *subscription.SubscriptionRepository,
+	fundsRepo *funds.Repository,
 ) *EnvelopeService {
 	return &EnvelopeService{
-		repo:     repo,
-		planRepo: planRepo,
-		subRepo:  subRepo,
+		repo:      repo,
+		planRepo:  planRepo,
+		subRepo:   subRepo,
+		fundsRepo: fundsRepo,
 	}
 }
 
@@ -190,7 +194,7 @@ func (s *EnvelopeService) CreateEnvelope(userID string, planID string, req Creat
 	return &response.APIResponse{
 		Success: true,
 		Message: "Envelope created successfully",
-		Data:    mapEnvelopeToResponse(createdEnvelope, 0, nil),
+		Data:    mapEnvelopeToResponse(createdEnvelope, 0, nil, funds.WithdrawalTotals{}),
 	}
 }
 
@@ -231,7 +235,11 @@ func (s *EnvelopeService) GetPlanEnvelopes(userID string, planID string) *respon
 		}
 	}
 
-	tree := buildEnvelopeTree(envelopes)
+	totals, err := s.fundsRepo.EnvelopeTotalsByPlan(planID, userID)
+	if err != nil {
+		return &response.APIResponse{Success: false, Message: "Could not calculate envelope balances", Error: err}
+	}
+	tree := buildEnvelopeTree(envelopes, totals)
 
 	return &response.APIResponse{
 		Success: true,
@@ -285,11 +293,15 @@ func (s *EnvelopeService) GetEnvelopeByID(userID string, planID string, envelope
 			Error:   err,
 		}
 	}
+	totals, err := s.fundsRepo.EnvelopeTotals(nil, envelope.ID, userID)
+	if err != nil {
+		return &response.APIResponse{Success: false, Message: "Could not calculate envelope balance", Error: err}
+	}
 
 	return &response.APIResponse{
 		Success: true,
 		Message: "Envelope fetched successfully",
-		Data:    mapEnvelopeToResponse(envelope, allocatedToChildren, nil),
+		Data:    mapEnvelopeToResponse(envelope, allocatedToChildren, nil, totals),
 	}
 }
 
@@ -464,7 +476,7 @@ func (s *EnvelopeService) UpdateEnvelope(userID string, planID string, envelopeI
 	return &response.APIResponse{
 		Success: true,
 		Message: "Envelope updated successfully",
-		Data:    mapEnvelopeToResponse(updatedEnvelope, allocatedToChildren, nil),
+		Data:    mapEnvelopeToResponse(updatedEnvelope, allocatedToChildren, nil, funds.WithdrawalTotals{}),
 	}
 }
 
@@ -536,6 +548,17 @@ func (s *EnvelopeService) DeleteEnvelope(userID string, planID string, envelopeI
 		}
 
 		releasedAmount = envelope.Amount
+		withdrawalTotals, err := s.fundsRepo.EnvelopeTotals(tx, envelope.ID, userID)
+		if err != nil {
+			return err
+		}
+		if withdrawalTotals.Pending > 0 {
+			return ErrEnvelopeWithdrawalInProgress
+		}
+		releasedAmount = envelope.Amount - withdrawalTotals.Paid
+		if releasedAmount < 0 {
+			releasedAmount = 0
+		}
 
 		if envelope.ParentEnvelopeID == nil {
 			releasedTo = "plan"
@@ -545,9 +568,17 @@ func (s *EnvelopeService) DeleteEnvelope(userID string, planID string, envelopeI
 			releasedToID = envelope.ParentEnvelopeID
 		}
 
-		err = s.repo.DeleteWithTx(tx, envelope)
-		if err != nil {
-			return err
+		if withdrawalTotals.Paid == 0 {
+			if err = s.repo.DeleteWithTx(tx, envelope); err != nil {
+				return err
+			}
+		} else {
+			// Keep the spent portion allocated so deleting an envelope cannot recreate money.
+			envelope.Amount = withdrawalTotals.Paid
+			envelope.Status = EnvelopeStatusCancelled
+			if err = s.repo.UpdateWithTx(tx, envelope); err != nil {
+				return err
+			}
 		}
 
 		deletedEnvelope = envelope
@@ -567,7 +598,7 @@ func (s *EnvelopeService) DeleteEnvelope(userID string, planID string, envelopeI
 			"released_amount": releasedAmount,
 			"released_to":     releasedTo,
 			"released_to_id":  releasedToID,
-			"message":         "Envelope amount has been released back to the parent allocation.",
+			"message":         "Only the envelope's remaining balance was released back to the parent allocation.",
 		},
 	}
 }
@@ -722,6 +753,10 @@ func envelopeErrorResponse(message string, err error) *response.APIResponse {
 			Message: "Cannot delete an envelope that has child envelopes",
 			Error:   err,
 		}
+	}
+
+	if err == ErrEnvelopeWithdrawalInProgress {
+		return &response.APIResponse{Success: false, Message: "Wait for the envelope withdrawal to finish before deleting it", Error: err}
 	}
 
 	return &response.APIResponse{

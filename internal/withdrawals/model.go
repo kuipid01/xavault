@@ -12,6 +12,7 @@ const (
 	WithdrawalStatusPaid      = "paid"
 	WithdrawalStatusFailed    = "failed"
 	WithdrawalStatusCancelled = "cancelled"
+	WithdrawalStatusReversed  = "reversed"
 
 	WithdrawalSourcePlanUnboxed = "plan_unboxed"
 	WithdrawalSourceEnvelope    = "envelope"
@@ -47,6 +48,7 @@ type Withdrawal struct {
 	PaidAt      *time.Time `json:"paid_at"`
 	FailedAt    *time.Time `json:"failed_at"`
 	CancelledAt *time.Time `json:"cancelled_at"`
+	ReversedAt  *time.Time `json:"reversed_at"`
 
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`

@@ -522,13 +522,35 @@ func (s *AuthService) ResetPassword(req ResetPasswordRequest) *response.APIRespo
 	}
 }
 
-func (s *AuthService) Logout(req ResetPasswordRequest) *response.APIResponse {
-
+func (s *AuthService) Logout(req RefreshTokenRequest) *response.APIResponse {
+	req.RefreshToken = strings.TrimSpace(req.RefreshToken)
+	if req.RefreshToken != "" {
+		user, err := s.repository.GetUserWithToken(req.RefreshToken)
+		if err != nil {
+			return &response.APIResponse{Success: false, Message: "Could not log out", Error: err.Error()}
+		}
+		if user != nil {
+			if err := s.repository.UpdateRefreshToken(user.ID, ""); err != nil {
+				return &response.APIResponse{Success: false, Message: "Could not log out", Error: err.Error()}
+			}
+		}
+	}
 	return &response.APIResponse{
 		Success: true,
 		Message: "Logout successful",
+		Data:    fiber.Map{"logged_out": true},
 	}
+}
 
+func (s *AuthService) LogoutAllDevices(userID string) *response.APIResponse {
+	if err := s.repository.UpdateRefreshToken(strings.TrimSpace(userID), ""); err != nil {
+		return &response.APIResponse{Success: false, Message: "Could not revoke sessions", Error: err.Error()}
+	}
+	return &response.APIResponse{
+		Success: true,
+		Message: "All sessions have been revoked",
+		Data:    fiber.Map{"logged_out_all_devices": true},
+	}
 }
 
 func (s *AuthService) ResendVerificationMail(req ResendVerificationMailRequest) *response.APIResponse {
@@ -739,15 +761,18 @@ func (s *AuthService) VerifyWithdrawalPin(req VerifyWithdrawalPinRequest) *respo
 		return &response.APIResponse{Success: false, Message: "Invalid withdrawal PIN", Error: validationErrors}
 	}
 
-	user, err := s.repository.FindById(req.UserID)
+	err := s.repository.VerifyWithdrawalPin(req.UserID, req.Pin)
 	if err != nil {
-		return &response.APIResponse{Success: false, Message: "Could not fetch user", Error: err.Error()}
-	}
-	if user == nil || user.WithdrawalPinHash == nil || *user.WithdrawalPinHash == "" {
-		return &response.APIResponse{Success: false, Message: "Payment PIN is not set", Error: "pin_not_set"}
-	}
-	if !CheckPasswordHash(req.Pin, *user.WithdrawalPinHash) {
-		return &response.APIResponse{Success: false, Message: "Invalid payment PIN", Error: "invalid_pin"}
+		switch {
+		case errors.Is(err, users.ErrWithdrawalPinNotSet):
+			return &response.APIResponse{Success: false, Message: "Payment PIN is not set", Error: "pin_not_set"}
+		case errors.Is(err, users.ErrWithdrawalPinInvalid):
+			return &response.APIResponse{Success: false, Message: "Incorrect payment PIN. One attempt remaining before withdrawals are locked.", Error: "invalid_pin"}
+		case errors.Is(err, users.ErrWithdrawalPinLocked):
+			return &response.APIResponse{Success: false, Message: "Withdrawals are locked after two incorrect PIN attempts. Reset your PIN to continue.", Error: "withdrawal_pin_locked"}
+		default:
+			return &response.APIResponse{Success: false, Message: "Could not verify payment PIN", Error: err.Error()}
+		}
 	}
 
 	return &response.APIResponse{

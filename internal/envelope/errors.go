@@ -13,4 +13,5 @@ var (
 	ErrEnvelopeHasChildren            = errors.New("envelope has child envelopes")
 	ErrEnvelopeCannotDelete           = errors.New("envelope cannot be deleted")
 	ErrEnvelopeLockedCannotDelete     = errors.New("locked envelope cannot be deleted")
+	ErrEnvelopeWithdrawalInProgress   = errors.New("envelope has a withdrawal in progress")
 )

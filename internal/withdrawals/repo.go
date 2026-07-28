@@ -61,6 +61,22 @@ func (r *WithdrawalRepository) FindByPlanIDAndUserID(planID string, userID strin
 
 	return withdrawals, nil
 }
+
+func (r *WithdrawalRepository) FindByUserID(userID string, limit int, offset int) ([]Withdrawal, int64, error) {
+	var withdrawals []Withdrawal
+	var total int64
+
+	if err := r.db.Model(&Withdrawal{}).Where("user_id = ?", userID).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	err := r.db.Where("user_id = ?", userID).
+		Order("created_at DESC").
+		Limit(limit).
+		Offset(offset).
+		Find(&withdrawals).Error
+
+	return withdrawals, total, err
+}
 func (r *WithdrawalRepository) dbOrTx(tx *gorm.DB) *gorm.DB {
 	if tx != nil {
 		return tx
@@ -277,7 +293,7 @@ func (r *WithdrawalRepository) MarkTransferInitiatedWithTx(
 	}
 
 	return tx.Model(&Withdrawal{}).
-		Where("id = ?", withdrawalID).
+		Where("id = ? AND status = ?", withdrawalID, WithdrawalStatusPending).
 		Updates(map[string]interface{}{
 			"status":                 WithdrawalStatusProcessing,
 			"provider_status":        providerStatus,
@@ -325,4 +341,22 @@ func (r *WithdrawalRepository) MarkPaidWithTx(
 			"provider_status": providerStatus,
 			"paid_at":         &now,
 		}).Error
+}
+
+func (r *WithdrawalRepository) MarkReversedWithTx(
+	tx *gorm.DB,
+	withdrawalID string,
+	providerStatus string,
+	reason string,
+) error {
+	if tx == nil {
+		return errors.New("transaction is required")
+	}
+	now := time.Now()
+	return tx.Model(&Withdrawal{}).Where("id = ?", withdrawalID).Updates(map[string]interface{}{
+		"status":          WithdrawalStatusReversed,
+		"provider_status": providerStatus,
+		"failure_reason":  reason,
+		"reversed_at":     &now,
+	}).Error
 }

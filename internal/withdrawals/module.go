@@ -3,6 +3,7 @@ package withdrawals
 import (
 	bankaccounts "github.com/kuipid01/salary-vault/internal/bank_accounts"
 	"github.com/kuipid01/salary-vault/internal/envelope"
+	"github.com/kuipid01/salary-vault/internal/funds"
 	paymentproviders "github.com/kuipid01/salary-vault/internal/platform/payment-providers"
 	"github.com/kuipid01/salary-vault/internal/shared/client"
 	idempotenceClient "github.com/kuipid01/salary-vault/internal/shared/client/idempotence"
@@ -18,10 +19,10 @@ type WithdrawalModule struct {
 	Hnd  *WithdrawalHandler
 }
 
-func NewWithdrawalModule(db *gorm.DB, idempotencyManager *idempotenceClient.IdempotentRequest, planRepo *spendingplans.PlanRepository, envelopeRepo *envelope.EnvelopeRepo, walletRepo *wallets.WalletRepository, bankAccountRepo *bankaccounts.Repository, userRepo *users.UserRepository, reusableClient *client.ReusableClient) *WithdrawalModule {
+func NewWithdrawalModule(db *gorm.DB, idempotencyManager *idempotenceClient.IdempotentRequest, planRepo *spendingplans.PlanRepository, envelopeRepo *envelope.EnvelopeRepo, walletRepo *wallets.WalletRepository, bankAccountRepo *bankaccounts.Repository, userRepo *users.UserRepository, reusableClient *client.ReusableClient, fundsRepo *funds.Repository) *WithdrawalModule {
 	repo := NewWithdrawalRepository(db)
 	paymentproviders := paymentproviders.NewPaystackProvider(reusableClient)
-	svc := NewWithdrawalService(repo, planRepo, envelopeRepo, walletRepo, bankAccountRepo, userRepo, paymentproviders, idempotencyManager)
+	svc := NewWithdrawalService(repo, planRepo, envelopeRepo, walletRepo, bankAccountRepo, userRepo, paymentproviders, idempotencyManager, fundsRepo)
 	hnd := NewWithdrawalHandler(svc)
 	return &WithdrawalModule{Repo: repo, Svc: svc, Hnd: hnd}
 }

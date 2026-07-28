@@ -3,6 +3,7 @@ package subscription
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -57,6 +58,43 @@ func (s *SubscriptionRepository) ActivateByReference(reference string) error {
 		return fmt.Errorf("no pending subscription found for reference %s", reference)
 	}
 	return nil
+}
+
+func (s *SubscriptionRepository) ActivateVerified(
+	reference string,
+	userID uuid.UUID,
+	planID uuid.UUID,
+	amount int64,
+	currency string,
+) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var sub UserSubscription
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Preload("Plan").
+			Where("payment_reference = ? AND status = ?", reference, SubPending).
+			First(&sub).Error; err != nil {
+			return fmt.Errorf("pending subscription not found: %w", err)
+		}
+		if sub.UserID != userID || sub.PlanID != planID {
+			return errors.New("subscription payment metadata does not match pending subscription")
+		}
+		if amount != sub.Plan.PriceKobo {
+			return fmt.Errorf("subscription payment amount mismatch: expected %d, got %d", sub.Plan.PriceKobo, amount)
+		}
+		if !strings.EqualFold(strings.TrimSpace(currency), strings.TrimSpace(sub.Plan.Currency)) {
+			return errors.New("subscription payment currency mismatch")
+		}
+		now := time.Now()
+		result := tx.Model(&UserSubscription{}).Where("id = ? AND status = ?", sub.ID, SubPending).Updates(map[string]interface{}{
+			"status": SubActive, "current_period_start": now, "current_period_end": now.AddDate(0, 1, 0),
+		})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return errors.New("subscription was already processed")
+		}
+		return nil
+	})
 }
 
 // GetActiveSubscription returns the user's current active subscription.

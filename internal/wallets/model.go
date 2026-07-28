@@ -48,20 +48,20 @@ type WalletLedger struct {
 
 	Currency string `gorm:"not null;default:'NGN'" json:"currency"`
 
-	Reference string `gorm:"not null;uniqueIndex"`
+	Reference string `gorm:"not null;uniqueIndex" json:"reference"`
 
-	Type string `gorm:"not null;index"`
+	Type string `gorm:"not null;index" json:"type"`
 	// credit, debit, lock, unlock
 
-	Source string `gorm:"not null;index"`
+	Source string `gorm:"not null;index" json:"source"`
 	// deposit, withdrawal, spending_plan
 
-	SourceID string
+	SourceID string `json:"source_id"`
 
-	Amount        int64 `gorm:"not null"`
-	BalanceBefore int64 `gorm:"not null"`
-	BalanceAfter  int64 `gorm:"not null"`
+	Amount        int64 `gorm:"not null" json:"amount"`
+	BalanceBefore int64 `gorm:"not null" json:"balance_before"`
+	BalanceAfter  int64 `gorm:"not null" json:"balance_after"`
 
-	Description string
-	CreatedAt   time.Time
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"created_at"`
 }

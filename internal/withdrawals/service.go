@@ -11,6 +11,7 @@ import (
 
 	bankaccounts "github.com/kuipid01/salary-vault/internal/bank_accounts"
 	"github.com/kuipid01/salary-vault/internal/envelope"
+	"github.com/kuipid01/salary-vault/internal/funds"
 	paymentproviders "github.com/kuipid01/salary-vault/internal/platform/payment-providers"
 	httpclient "github.com/kuipid01/salary-vault/internal/shared/client"
 	client "github.com/kuipid01/salary-vault/internal/shared/client/idempotence"
@@ -19,11 +20,8 @@ import (
 	spendingplans "github.com/kuipid01/salary-vault/internal/spending_plans"
 	"github.com/kuipid01/salary-vault/internal/users"
 	"github.com/kuipid01/salary-vault/internal/wallets"
-	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
-
-const localPendingWithdrawalGracePeriod = 2 * time.Minute
 
 type WithdrawalService struct {
 	repo               *WithdrawalRepository
@@ -34,6 +32,7 @@ type WithdrawalService struct {
 	userRepo           *users.UserRepository
 	payment            paymentproviders.PaymentProvider
 	idempotencyManager *client.IdempotentRequest
+	fundsRepo          *funds.Repository
 }
 
 func NewWithdrawalService(
@@ -45,6 +44,7 @@ func NewWithdrawalService(
 	userRepo *users.UserRepository,
 	payment paymentproviders.PaymentProvider,
 	idempotencyManager *client.IdempotentRequest,
+	fundsRepo *funds.Repository,
 ) *WithdrawalService {
 	return &WithdrawalService{
 		repo:               repo,
@@ -55,6 +55,7 @@ func NewWithdrawalService(
 		userRepo:           userRepo,
 		payment:            payment,
 		idempotencyManager: idempotencyManager,
+		fundsRepo:          fundsRepo,
 	}
 }
 
@@ -81,7 +82,7 @@ func (s *WithdrawalService) PreviewWithdrawal(
 			Error:   validationErrors,
 		}
 	}
-	plan, err := s.planRepo.FindByID(planID)
+	plan, err := s.planRepo.FindByIDAndUserID(planID, userID)
 	if err != nil {
 		return &response.APIResponse{
 			Success: false,
@@ -106,13 +107,6 @@ func (s *WithdrawalService) PreviewWithdrawal(
 		}
 	}
 
-	if plan.UnboxedBalancePolicy == spendingplans.PlanUnboxedPolicyLockedUntilPlanEnds {
-		return &response.APIResponse{
-			Success: false,
-			Message: "Spending plan is locked until the plan ends",
-			Error:   ErrSpendingPlanLockedUntilPlanEnds,
-		}
-	}
 	preview, err := s.calculateWithdrawalPreview(userID, planID, req.SourceType, req.EnvelopeID, req.Amount)
 
 	if err != nil {
@@ -201,7 +195,6 @@ func (s *WithdrawalService) RequestWithdrawal(
 			now := time.Now()
 
 			withdrawalID := security.GenateUniqueID()
-			holdLedgerID := security.GenateUniqueID()
 			reference := "WITHDRAWAL_" + security.GenateUniqueID()
 
 			// Data flow:
@@ -227,30 +220,7 @@ func (s *WithdrawalService) RequestWithdrawal(
 					return ErrPlanNotActive
 				}
 
-				// Locked plans should only block withdrawal before the plan has ended.
-				// If your product rule is stricter, remove the date check.
-				if plan.UnboxedBalancePolicy == spendingplans.PlanUnboxedPolicyLockedUntilPlanEnds &&
-					now.Before(plan.EndDate) {
-					return ErrSpendingPlanLockedUntilPlanEnds
-				}
-
 				planCurrency = plan.Currency
-
-				// This preview must use locked rows internally, especially when source type is envelope.
-				preview, err := s.calculateWithdrawalPreviewTx(
-					tx,
-					userID,
-					planID,
-					req.SourceType,
-					req.EnvelopeID,
-					req.Amount,
-				)
-				if err != nil {
-					return err
-				}
-				if !preview.CanWithdraw {
-					return ErrInsufficientWithdrawable
-				}
 
 				err = s.ensureNoBlockingOpenWithdrawalTx(
 					tx,
@@ -258,10 +228,18 @@ func (s *WithdrawalService) RequestWithdrawal(
 					planID,
 					req.SourceType,
 					req.EnvelopeID,
-					now,
 				)
 				if err != nil {
 					return err
+				}
+
+				// Calculate after stale pending requests are cleared so reservations are current.
+				preview, err := s.calculateWithdrawalPreviewTx(tx, userID, planID, req.SourceType, req.EnvelopeID, req.Amount)
+				if err != nil {
+					return err
+				}
+				if !preview.CanWithdraw {
+					return ErrInsufficientWithdrawable
 				}
 
 				// Critical money check:
@@ -309,25 +287,6 @@ func (s *WithdrawalService) RequestWithdrawal(
 
 				createdWithdrawal = withdrawal
 
-				holdLedger := &wallets.WalletLedger{
-					ID:        holdLedgerID,
-					UserID:    userID,
-					WalletID:  plan.WalletID,
-					Currency:  plan.Currency,
-					Reference: reference,
-					Source:    wallets.WalletLedgerSourceWithdrawal,
-					SourceID:  withdrawal.ID,
-					Type:      wallets.WalletLedgerTypeWithdrawalHold,
-
-					Amount:    req.Amount,
-					CreatedAt: now,
-				}
-
-				_, err = s.walletRepo.CreateWalletLedgerTx(tx, holdLedger)
-				if err != nil {
-					return err
-				}
-
 				return nil
 			})
 
@@ -363,11 +322,6 @@ func (s *WithdrawalService) RequestWithdrawal(
 				// No wallet balance was moved locally, so only mark the request failed.
 				reversalErr := s.markFailedWithdrawalInitiation(
 					createdWithdrawal.ID,
-					userID,
-					createdWithdrawal.WalletID,
-					createdWithdrawal.Amount,
-					createdWithdrawal.Currency,
-					createdWithdrawal.Reference,
 					fmt.Sprintf("Paystack transfer initiation failed: %v", err),
 				)
 				if reversalErr != nil {
@@ -438,42 +392,10 @@ func (s *WithdrawalService) RequestWithdrawal(
 
 func (s *WithdrawalService) markFailedWithdrawalInitiation(
 	withdrawalID string,
-	userID string,
-	walletID string,
-	amount int64,
-	currency string,
-	reference string,
 	reason string,
 ) error {
-	now := time.Now()
-
 	return s.repo.WithTransaction(func(tx *gorm.DB) error {
-		// Data flow:
-		// 1. Paystack failed before final transfer processing.
-		// 2. Mark withdrawal as failed.
-		// 3. Write a ledger event for auditability; balances do not change.
-		err := s.repo.MarkFailedWithTx(tx, withdrawalID, reason)
-		if err != nil {
-			return err
-		}
-
-		reversalLedger := &wallets.WalletLedger{
-			ID:        security.GenateUniqueID(),
-			UserID:    userID,
-			WalletID:  walletID,
-			Currency:  currency,
-			Reference: "WITHDRAWAL_FAILED_" + withdrawalID,
-
-			Source:   wallets.WalletLedgerSourceWithdrawal,
-			SourceID: withdrawalID,
-			Type:     wallets.WalletLedgerTypeWithdrawalReversal,
-
-			Amount:    amount,
-			CreatedAt: now,
-		}
-
-		_, err = s.walletRepo.CreateWalletLedgerTx(tx, reversalLedger)
-		return err
+		return s.repo.MarkFailedWithTx(tx, withdrawalID, reason)
 	})
 }
 func (s *WithdrawalService) GetPlanWithdrawals(
@@ -525,13 +447,40 @@ func (s *WithdrawalService) GetPlanWithdrawals(
 	}
 }
 
+func (s *WithdrawalService) GetUserWithdrawals(userID string, page int, limit int) *response.APIResponse {
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+	withdrawals, total, err := s.repo.FindByUserID(userID, limit, (page-1)*limit)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Could not fetch withdrawals",
+			Error:   err,
+		}
+	}
+
+	return &response.APIResponse{
+		Success: true,
+		Message: "Withdrawals fetched successfully",
+		Data: ListWithdrawalsResponse{
+			Items: mapWithdrawalsToResponse(withdrawals),
+			Page:  page,
+			Limit: limit,
+			Total: total,
+		},
+	}
+}
+
 func (s *WithdrawalService) ensureNoBlockingOpenWithdrawalTx(
 	tx *gorm.DB,
 	userID string,
 	planID string,
 	sourceType string,
 	envelopeID *string,
-	now time.Time,
 ) error {
 	openWithdrawal, err := s.repo.FindOpenWithdrawalForSourceTx(
 		tx,
@@ -554,18 +503,10 @@ func (s *WithdrawalService) ensureNoBlockingOpenWithdrawalTx(
 		return ErrWithdrawalAlreadyProcessing
 	}
 
-	if now.Sub(openWithdrawal.CreatedAt) < localPendingWithdrawalGracePeriod {
-		return ErrWithdrawalRequestInProgress
-	}
-
-	return s.repo.MarkFailedWithTx(
-		tx,
-		openWithdrawal.ID,
-		fmt.Sprintf(
-			"stale local pending withdrawal expired after %s without Paystack transfer initiation",
-			localPendingWithdrawalGracePeriod,
-		),
-	)
+	// A pending record may represent a transfer Paystack accepted before the
+	// provider response could be persisted. Never retry that uncertainty as a
+	// new transfer; webhook processing or reconciliation must resolve it.
+	return ErrWithdrawalRequestInProgress
 }
 
 func (s *WithdrawalService) GetWithdrawalByID(
@@ -630,11 +571,11 @@ func (s *WithdrawalService) CompleteProviderWithdrawal(reference string, provide
 			return nil
 		}
 
-		if withdrawal.Status == WithdrawalStatusFailed || withdrawal.Status == WithdrawalStatusCancelled {
+		if withdrawal.Status == WithdrawalStatusFailed || withdrawal.Status == WithdrawalStatusCancelled || withdrawal.Status == WithdrawalStatusReversed {
 			return fmt.Errorf("withdrawal is already final with status %s", withdrawal.Status)
 		}
 
-		lockedBefore, updatedWallet, err := s.walletRepo.CompleteWithdrawalTx(
+		ledgerBefore, updatedWallet, err := s.walletRepo.CompleteWithdrawalTx(
 			tx,
 			withdrawal.UserID,
 			withdrawal.WalletID,
@@ -649,17 +590,19 @@ func (s *WithdrawalService) CompleteProviderWithdrawal(reference string, provide
 		}
 
 		ledger := &wallets.WalletLedger{
-			ID:            security.GenateUniqueID(),
-			UserID:        withdrawal.UserID,
-			WalletID:      withdrawal.WalletID,
-			Currency:      withdrawal.Currency,
-			Reference:     "WITHDRAWAL_PAID_" + withdrawal.ID,
+			ID:       security.GenateUniqueID(),
+			UserID:   withdrawal.UserID,
+			WalletID: withdrawal.WalletID,
+			Currency: withdrawal.Currency,
+			// Keep the provider-facing withdrawal reference on the customer ledger.
+			// The ledger ID already uniquely identifies this internal accounting entry.
+			Reference:     withdrawal.Reference,
 			Source:        wallets.WalletLedgerSourceWithdrawal,
 			SourceID:      withdrawal.ID,
 			Type:          wallets.WalletLedgerTypeWithdrawalDebit,
 			Amount:        withdrawal.Amount,
-			BalanceBefore: lockedBefore,
-			BalanceAfter:  updatedWallet.LockedBalance,
+			BalanceBefore: ledgerBefore,
+			BalanceAfter:  updatedWallet.LedgerBalance,
 			Description:   "Withdrawal completed by Paystack",
 			CreatedAt:     time.Now(),
 		}
@@ -698,10 +641,41 @@ func (s *WithdrawalService) FailProviderWithdrawal(reference string, providerSta
 			return ErrWithdrawalNotFound
 		}
 
-		if withdrawal.Status == WithdrawalStatusPaid ||
+		if withdrawal.Status == WithdrawalStatusReversed ||
 			withdrawal.Status == WithdrawalStatusFailed ||
 			withdrawal.Status == WithdrawalStatusCancelled {
 			return nil
+		}
+
+		if withdrawal.Status == WithdrawalStatusPaid {
+			ledgerBefore, wallet, err := s.walletRepo.ReverseCompletedWithdrawalTx(
+				tx,
+				withdrawal.UserID,
+				withdrawal.WalletID,
+				withdrawal.Amount,
+			)
+			if err != nil {
+				return err
+			}
+			if err := s.repo.MarkReversedWithTx(tx, withdrawal.ID, providerStatus, reason); err != nil {
+				return err
+			}
+			_, err = s.walletRepo.CreateWalletLedgerTx(tx, &wallets.WalletLedger{
+				ID:            security.GenateUniqueID(),
+				UserID:        withdrawal.UserID,
+				WalletID:      withdrawal.WalletID,
+				Currency:      withdrawal.Currency,
+				Reference:     "WITHDRAWAL_REVERSED_" + withdrawal.ID,
+				Source:        wallets.WalletLedgerSourceWithdrawal,
+				SourceID:      withdrawal.ID,
+				Type:          wallets.WalletLedgerTypeRefund,
+				Amount:        withdrawal.Amount,
+				BalanceBefore: ledgerBefore,
+				BalanceAfter:  wallet.LedgerBalance,
+				Description:   "Paystack reversed withdrawal",
+				CreatedAt:     time.Now(),
+			})
+			return err
 		}
 
 		if reason == "" {
@@ -826,6 +800,9 @@ func (s *WithdrawalService) calculateWithdrawalPreviewTx(
 			)
 			return nil, ErrEnvelopeNotAllowed
 		}
+		if plan.UnboxedBalancePolicy == spendingplans.PlanUnboxedPolicyLockedUntilPlanEnds && time.Now().Before(plan.EndDate) {
+			return nil, ErrSpendingPlanLockedUntilPlanEnds
+		}
 
 		withdrawableBalance, err = s.calculatePlanUnboxedWithdrawable(tx, plan.ID, userID, plan.Amount)
 		if err != nil {
@@ -911,6 +888,9 @@ func (s *WithdrawalService) calculateWithdrawalPreviewTx(
 
 	canWithdraw := len(validationErrors) == 0
 	remainingBalance := withdrawableBalance - amount
+	if remainingBalance < 0 {
+		remainingBalance = 0
+	}
 
 	log.Printf(
 		"[withdrawal_preview] completed userID=%s planID=%s sourceType=%s envelopeID=%v amount=%d withdrawableBalance=%d remainingBalance=%d canWithdraw=%t validationErrors=%v",
@@ -952,12 +932,12 @@ func (s *WithdrawalService) calculatePlanUnboxedWithdrawable(
 		return 0, err
 	}
 
-	previousWithdrawals, err := s.repo.SumPaidPlanUnboxedWithdrawalsTx(tx, planID, userID)
+	withdrawalTotals, err := s.fundsRepo.PlanUnboxedTotals(tx, planID, userID)
 	if err != nil {
 		return 0, err
 	}
 
-	withdrawable := planAmount - topLevelAllocated - previousWithdrawals
+	withdrawable := funds.AvailableBalance(planAmount, topLevelAllocated, withdrawalTotals)
 
 	if withdrawable < 0 {
 		return 0, nil
@@ -984,18 +964,21 @@ func (s *WithdrawalService) calculateEnvelopeWithdrawable(
 	if env == nil {
 		return 0, ErrEnvelopeNotFound
 	}
+	if env.UnboxedBalancePolicy == envelope.EnvelopeUnboxedPolicyLockedUntilParentEnds && time.Now().Before(env.EndDate) {
+		return 0, ErrEnvelopeLockedUntilEnd
+	}
 
 	childAllocated, err := s.envelopeRepo.SumChildEnvelopeAmountTx(tx, env.ID)
 	if err != nil {
 		return 0, err
 	}
 
-	previousWithdrawals, err := s.repo.SumPaidEnvelopeWithdrawalsTx(tx, env.ID, userID)
+	withdrawalTotals, err := s.fundsRepo.EnvelopeTotals(tx, env.ID, userID)
 	if err != nil {
 		return 0, err
 	}
 
-	withdrawable := env.Amount - childAllocated - previousWithdrawals
+	withdrawable := funds.AvailableBalance(env.Amount, childAllocated, withdrawalTotals)
 
 	if withdrawable < 0 {
 		return 0, nil
@@ -1128,20 +1111,17 @@ func validateWithdrawalPinFormat(pin string) map[string]string {
 }
 
 func (s *WithdrawalService) verifyWithdrawalPin(userID string, pin string) error {
-	user, err := s.userRepo.FindById(userID)
-	if err != nil {
+	err := s.userRepo.VerifyWithdrawalPin(userID, pin)
+	switch {
+	case errors.Is(err, users.ErrWithdrawalPinNotSet):
+		return ErrWithdrawalPinNotSet
+	case errors.Is(err, users.ErrWithdrawalPinInvalid):
+		return ErrInvalidWithdrawalPin
+	case errors.Is(err, users.ErrWithdrawalPinLocked):
+		return ErrWithdrawalPinLocked
+	default:
 		return err
 	}
-
-	if user == nil || user.WithdrawalPinHash == nil || strings.TrimSpace(*user.WithdrawalPinHash) == "" {
-		return ErrWithdrawalPinNotSet
-	}
-
-	if err := bcrypt.CompareHashAndPassword([]byte(*user.WithdrawalPinHash), []byte(pin)); err != nil {
-		return ErrInvalidWithdrawalPin
-	}
-
-	return nil
 }
 
 func (s *WithdrawalService) resolveWithdrawalRecipient(userID string, req RequestWithdrawalRequest) (string, error) {
@@ -1260,6 +1240,10 @@ func withdrawalErrorResponse(message string, err error) *response.APIResponse {
 		}
 	}
 
+	if err == ErrSpendingPlanLockedUntilPlanEnds || err == ErrEnvelopeLockedUntilEnd {
+		return &response.APIResponse{Success: false, Message: err.Error(), Error: err}
+	}
+
 	if err == ErrWalletNotFound {
 		return &response.APIResponse{
 			Success: false,
@@ -1303,7 +1287,15 @@ func withdrawalErrorResponse(message string, err error) *response.APIResponse {
 	if err == ErrInvalidWithdrawalPin {
 		return &response.APIResponse{
 			Success: false,
-			Message: "Invalid withdrawal PIN",
+			Message: "Incorrect withdrawal PIN. One attempt remaining before withdrawals are locked.",
+			Error:   err,
+		}
+	}
+
+	if err == ErrWithdrawalPinLocked {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Withdrawals are locked after two incorrect PIN attempts. Reset your PIN to continue.",
 			Error:   err,
 		}
 	}

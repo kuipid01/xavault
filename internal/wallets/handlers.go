@@ -94,12 +94,13 @@ func (h *WalletHandler) GetMyWalletLedger(c *fiber.Ctx) error {
 	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
 }
 func (h *WalletHandler) VerifyDeposit(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(string)
 	reference := c.Params("reference")
 	if reference == "" {
 		return response.Error(c, fiber.StatusBadRequest, "Invalid request payload", "")
 	}
 	ctx := c.UserContext()
-	result := h.svc.VerifyDeposit(ctx, reference)
+	result := h.svc.VerifyDeposit(ctx, userID, reference)
 
 	if result.Error != nil {
 		return response.Error(c, walletErrorStatus(result.Error), result.Message, result.Error)
@@ -108,12 +109,13 @@ func (h *WalletHandler) VerifyDeposit(c *fiber.Ctx) error {
 	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
 }
 func (h *WalletHandler) GetDepositByReference(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(string)
 	reference := c.Params("reference")
 	if reference == "" {
 		return response.Error(c, fiber.StatusBadRequest, "Invalid request payload", "")
 	}
 
-	result := h.svc.GetDepositByReference(reference)
+	result := h.svc.GetDepositByReference(userID, reference)
 
 	if result.Error != nil {
 		return response.Error(c, fiber.StatusBadRequest, result.Message, result.Error)

@@ -35,6 +35,14 @@ func (repo *WalletRepository) GetWalletByOwnerID(ownerID string) (*Wallet, error
 
 	return &wallet, nil
 }
+func (repo *WalletRepository) GetWalletByOwnerIDForUpdate(ownerID string) (*Wallet, error) {
+	var wallet Wallet
+	if err := repo.db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("user_id = ?", ownerID).First(&wallet).Error; err != nil {
+		return nil, err
+	}
+	return &wallet, nil
+}
 func (repo *WalletRepository) GetWalletByDedicatedAccountNumber(accountNumber string) (*Wallet, error) {
 	var wallet Wallet
 
@@ -42,6 +50,15 @@ func (repo *WalletRepository) GetWalletByDedicatedAccountNumber(accountNumber st
 		return nil, err
 	}
 
+	return &wallet, nil
+}
+func (repo *WalletRepository) GetWalletByDedicatedAccountNumberForUpdate(accountNumber string) (*Wallet, error) {
+	var wallet Wallet
+	if err := repo.db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("dedicated_account_number = ?", accountNumber).
+		First(&wallet).Error; err != nil {
+		return nil, err
+	}
 	return &wallet, nil
 }
 
@@ -80,6 +97,14 @@ func (repo *WalletRepository) GetDepositByReference(reference string) (*WalletDe
 
 	return &deposit, nil
 }
+func (repo *WalletRepository) GetDepositByReferenceForUpdate(reference string) (*WalletDeposit, error) {
+	var deposit WalletDeposit
+	if err := repo.db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("reference = ?", reference).First(&deposit).Error; err != nil {
+		return nil, err
+	}
+	return &deposit, nil
+}
 
 func (repo *WalletRepository) GetDepositsByWalletID(walletID string) ([]WalletDeposit, error) {
 	var deposits []WalletDeposit
@@ -110,30 +135,9 @@ func (repo *WalletRepository) UpdateDepositStatus(reference string, status strin
 }
 
 func (rep *WalletRepository) ExecuteInTransaction(fn func(txRepo *WalletRepository) error) error {
-	// 1. Begin the GORM database transaction
-	tx := rep.db.Begin()
-	if tx.Error != nil {
-		return tx.Error
-	}
-
-	// 2. Setup defer block to catch panics and force a safety rollback
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-		}
-	}()
-
-	// 3. Clone the wallet repository, injecting the *transactional* DB instance
-	txRepository := &WalletRepository{db: tx}
-
-	// 4. Pass the cloned repository into your business logic function closure
-	if err := fn(txRepository); err != nil {
-		tx.Rollback() // Rollback if the business logic returns an error
-		return err
-	}
-
-	// 5. Commit if everything completes cleanly without errors
-	return tx.Commit().Error
+	return rep.db.Transaction(func(tx *gorm.DB) error {
+		return fn(&WalletRepository{db: tx})
+	})
 }
 
 func (repo *WalletRepository) GetWalletDepositsByUserID(userID string) ([]WalletDeposit, error) {
@@ -159,7 +163,15 @@ func (repo *WalletRepository) LogWalletLedger(walletLedger *WalletLedger) (*Wall
 func (repo *WalletRepository) GetWalletLedgerByUserId(userId string) ([]WalletLedger, error) {
 	var walletLedger []WalletLedger
 
-	if err := repo.db.Where("user_id = ?", userId).Order("created_at DESC").Find(&walletLedger).Error; err != nil {
+	if err := repo.db.
+		Where("user_id = ?", userId).
+		Where("type NOT IN ?", []string{
+			WalletLedgerTypeLock,
+			WalletLedgerTypeUnlock,
+			WalletLedgerTypeWithdrawalHold,
+			WalletLedgerTypeWithdrawalReversal,
+		}).
+		Order("created_at DESC").Find(&walletLedger).Error; err != nil {
 		return nil, err
 	}
 
@@ -231,7 +243,7 @@ func (repo *WalletRepository) CancelFlexiblePlanTx(
 		return nil, 0, 0, 0, 0, err
 	}
 
-	if planAmount <= 0 {
+	if planAmount < 0 {
 		return nil, 0, 0, 0, 0, ErrInvalidWalletAmount
 	}
 
@@ -409,13 +421,43 @@ func (r *WalletRepository) CompleteWithdrawalTx(
 		return 0, nil, errors.New("locked balance is less than withdrawal amount")
 	}
 
-	lockedBefore := wallet.LockedBalance
+	ledgerBefore := wallet.LedgerBalance
 	wallet.LockedBalance -= amount
+	wallet.LedgerBalance -= amount
 
 	err = tx.Save(&wallet).Error
 	if err != nil {
 		return 0, nil, err
 	}
 
-	return lockedBefore, &wallet, nil
+	return ledgerBefore, &wallet, nil
+}
+
+func (r *WalletRepository) ReverseCompletedWithdrawalTx(
+	tx *gorm.DB,
+	userID string,
+	walletID string,
+	amount int64,
+) (int64, *Wallet, error) {
+	if tx == nil {
+		return 0, nil, errors.New("transaction is required")
+	}
+	if amount <= 0 {
+		return 0, nil, ErrInvalidWalletAmount
+	}
+
+	var wallet Wallet
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ? AND user_id = ?", walletID, userID).
+		First(&wallet).Error; err != nil {
+		return 0, nil, err
+	}
+
+	ledgerBefore := wallet.LedgerBalance
+	wallet.LockedBalance += amount
+	wallet.LedgerBalance += amount
+	if err := tx.Save(&wallet).Error; err != nil {
+		return 0, nil, err
+	}
+	return ledgerBefore, &wallet, nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -83,11 +84,10 @@ func (s *SubscriptionService) CreateSubscription(
 	if err != nil {
 		return nil, fmt.Errorf("failed to initiate payment: %w", err)
 	}
-	fmt.Println("response data:", depositResp)
-	// Extract authorization_url from the Paystack response data
-	resp := depositResp.Data.(map[string]interface{})
-	data := resp["data"].(map[string]interface{})
-	paymentURL := data["authorization_url"].(string)
+	paymentURL, err := subscriptionAuthorizationURL(depositResp.Data)
+	if err != nil {
+		return nil, err
+	}
 
 	// 4. Create a pending subscription row – will be activated by the webhook
 	pending := &UserSubscription{
@@ -117,11 +117,38 @@ func (s *SubscriptionService) CreateSubscription(
 
 // ActivateSubscription is called from the Paystack charge.success webhook.
 // It finds the existing pending subscription by the Paystack reference and activates it.
-func (s *SubscriptionService) ActivateSubscription(userIDStr, planIDStr, providerRef string) error {
-	if err := s.subRepo.ActivateByReference(providerRef); err != nil {
+func (s *SubscriptionService) ActivateSubscription(userIDStr, planIDStr, providerRef string, amount int64, currency string) error {
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		return errors.New("invalid subscription user metadata")
+	}
+	planID, err := uuid.Parse(planIDStr)
+	if err != nil {
+		return errors.New("invalid subscription plan metadata")
+	}
+	if amount <= 0 {
+		return errors.New("invalid subscription payment amount")
+	}
+	if err := s.subRepo.ActivateVerified(providerRef, userID, planID, amount, currency); err != nil {
 		return fmt.Errorf("activate subscription: %w", err)
 	}
 	return nil
+}
+
+func subscriptionAuthorizationURL(payload interface{}) (string, error) {
+	root, ok := payload.(map[string]interface{})
+	if !ok || root == nil {
+		return "", errors.New("payment provider returned an invalid response")
+	}
+	data := root
+	if nested, ok := root["data"].(map[string]interface{}); ok {
+		data = nested
+	}
+	url, ok := data["authorization_url"].(string)
+	if !ok || strings.TrimSpace(url) == "" {
+		return "", errors.New("payment provider response is missing authorization_url")
+	}
+	return strings.TrimSpace(url), nil
 }
 
 func (s *SubscriptionService) GetSubscriptionByID(id uuid.UUID) (*GetSubscriptionResponse, error) {
