@@ -796,6 +796,13 @@ func (s *WithdrawalService) calculateWithdrawalPreviewTx(
 		)
 
 	case WithdrawalSourceEnvelope:
+		// The plan is the security boundary. An envelope cannot provide an
+		// early-withdrawal path around a locked parent plan, including for
+		// legacy rows whose stored envelope policy is flexible.
+		if plan.UnboxedBalancePolicy == spendingplans.PlanUnboxedPolicyLockedUntilPlanEnds && time.Now().Before(plan.EndDate) {
+			return nil, ErrSpendingPlanLockedUntilPlanEnds
+		}
+
 		normalizedEnvelopeID := normalizeOptionalString(envelopeID)
 
 		log.Printf(

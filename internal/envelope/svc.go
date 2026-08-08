@@ -155,6 +155,11 @@ func (s *EnvelopeService) CreateEnvelope(userID string, planID string, req Creat
 		if policy == "" {
 			policy = EnvelopeUnboxedPolicyFlexible
 		}
+		// A child allocation must never weaken the withdrawal restriction of
+		// its spending plan. Locked plans therefore own the effective policy.
+		if plan.UnboxedBalancePolicy == spendingplans.PlanUnboxedPolicyLockedUntilPlanEnds {
+			policy = EnvelopeUnboxedPolicyLockedUntilParentEnds
+		}
 
 		currentEnvelopeCount, err := s.repo.CountActiveByPlanIDTx(tx, planID)
 		if err != nil {
@@ -393,6 +398,9 @@ func (s *EnvelopeService) UpdateEnvelope(userID string, planID string, envelopeI
 
 		if req.UnboxedBalancePolicy != nil {
 			newPolicy = strings.TrimSpace(*req.UnboxedBalancePolicy)
+		}
+		if plan.UnboxedBalancePolicy == spendingplans.PlanUnboxedPolicyLockedUntilPlanEnds {
+			newPolicy = EnvelopeUnboxedPolicyLockedUntilParentEnds
 		}
 
 		if !newEndDate.After(newStartDate) {
