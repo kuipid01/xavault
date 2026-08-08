@@ -17,7 +17,20 @@ docker-down:
 	docker compose down
 
 migrate-up:
-	migrate -path migrations -database "postgres://salary_vault:salary_vault_password@localhost:5432/salary_vault?sslmode=disable" up
+	go run ./cmd/migrate up
 
 migrate-down:
-	migrate -path migrations -database "postgres://salary_vault:salary_vault_password@localhost:5432/salary_vault?sslmode=disable" down
+	ALLOW_MIGRATION_DOWN=true go run ./cmd/migrate down
+
+migrate-status:
+	go run ./cmd/migrate status
+
+migrate-test:
+	go test ./internal/database -run "TestVersionedMigrationsBuildFreshDatabase|TestGooseAdoptsLegacyAutoMigrateDatabase" -v
+.PHONY: financial-test financial-test-race
+
+financial-test:
+	go test -p 1 -tags=integration ./internal/alerts ./internal/reconciliation ./internal/wallets ./internal/withdrawals ./internal/webhooks ./internal/auth -v
+
+financial-test-race:
+	go test -race -p 1 -tags=integration ./internal/alerts ./internal/reconciliation ./internal/wallets ./internal/withdrawals ./internal/webhooks ./internal/auth

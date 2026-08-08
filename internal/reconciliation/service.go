@@ -2,13 +2,13 @@ package reconciliation
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/kuipid01/salary-vault/internal/alerts"
 	paymentproviders "github.com/kuipid01/salary-vault/internal/platform/payment-providers"
 	"github.com/kuipid01/salary-vault/internal/wallets"
 	"github.com/kuipid01/salary-vault/internal/withdrawals"
@@ -20,6 +20,18 @@ type Service struct {
 	provider    paymentproviders.PaymentProvider
 	wallets     *wallets.WalletService
 	withdrawals *withdrawals.WithdrawalService
+	alerts      *alerts.Service
+}
+
+func (s *Service) SetAlertPublisher(publisher *alerts.Service) { s.alerts = publisher }
+
+func (s *Service) publishAlert(ctx context.Context, input alerts.Input) {
+	if s.alerts == nil {
+		return
+	}
+	if err := s.alerts.Publish(ctx, input); err != nil {
+		log.Printf(`{"level":"error","event":"operational_alert_enqueue_failed","alert_type":%q,"error":%q}`, input.EventType, err.Error())
+	}
 }
 
 type RunResult struct {
@@ -27,6 +39,13 @@ type RunResult struct {
 	CheckedAt        time.Time `json:"checked_at"`
 	Findings         int       `json:"findings"`
 	ProcessingHalted bool      `json:"processing_halted"`
+}
+
+type ReferenceInspection struct {
+	Reference  string                   `json:"reference"`
+	Deposit    *wallets.WalletDeposit   `json:"deposit,omitempty"`
+	Withdrawal *withdrawals.Withdrawal  `json:"withdrawal,omitempty"`
+	Events     []map[string]interface{} `json:"events"`
 }
 
 func NewService(
@@ -68,7 +87,11 @@ func (s *Service) RunFinancialCheck(ctx context.Context) (*RunResult, error) {
 		}
 	}
 
-	findings = append(findings, s.referenceFindings(runID)...)
+	accountingFindings, err := s.accountingFindings(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	findings = append(findings, accountingFindings...)
 	if len(findings) > 0 {
 		if err := s.db.WithContext(ctx).Create(&findings).Error; err != nil {
 			return nil, err
@@ -88,28 +111,150 @@ func (s *Service) RunFinancialCheck(ctx context.Context) (*RunResult, error) {
 			return nil, err
 		}
 		log.Printf(`{"level":"critical","event":"financial_processing_halted","run_id":%q,"findings":%d}`, runID, len(findings))
+		s.publishAlert(ctx, alerts.Input{Severity: alerts.SeverityCritical, EventType: "financial_processing_halted", Title: "Financial processing halted", Message: reason, Fingerprint: "financial-processing-halted", Metadata: map[string]interface{}{"run_id": runID, "findings": len(findings)}})
 	}
 
 	return &RunResult{RunID: runID, CheckedAt: now, Findings: len(findings), ProcessingHalted: halt}, nil
 }
 
-func (s *Service) referenceFindings(runID string) []Finding {
+func (s *Service) accountingFindings(ctx context.Context, runID string) ([]Finding, error) {
 	var findings []Finding
 	type duplicate struct {
 		Reference string
 		Count     int64
 	}
 	var ledgerDuplicates []duplicate
-	_ = s.db.Model(&wallets.WalletLedger{}).
+	if err := s.db.WithContext(ctx).Model(&wallets.WalletLedger{}).
 		Select("reference, COUNT(*) AS count").
-		Group("reference").Having("COUNT(*) > 1").Scan(&ledgerDuplicates).Error
+		Group("reference").Having("COUNT(*) > 1").Scan(&ledgerDuplicates).Error; err != nil {
+		return nil, err
+	}
 	for _, item := range ledgerDuplicates {
 		findings = append(findings, Finding{
 			RunID: runID, Severity: SeverityCritical, Code: "duplicate_ledger_reference",
 			EntityType: "ledger", EntityID: item.Reference, Expected: "1", Actual: fmt.Sprintf("%d", item.Count),
 		})
 	}
-	return findings
+
+	type walletTotal struct {
+		WalletID       string
+		StoredLedger   int64
+		ComputedLedger int64
+		StoredLocked   int64
+		ComputedLocked int64
+	}
+	var totals []walletTotal
+	if err := s.db.WithContext(ctx).Raw(`
+		SELECT w.id AS wallet_id,
+		       w.ledger_balance AS stored_ledger,
+		       w.locked_balance AS stored_locked,
+		       COALESCE(SUM(CASE
+		         WHEN l.type IN ('credit','refund') THEN l.amount
+		         WHEN l.type IN ('debit','withdrawal_debit') THEN -l.amount
+		         ELSE 0 END), 0) AS computed_ledger,
+		       COALESCE(SUM(CASE
+		         WHEN l.type = 'lock' THEN l.amount
+		         WHEN l.type = 'unlock' THEN -l.amount
+		         WHEN l.type = 'withdrawal_debit' THEN -l.amount
+		         WHEN l.type = 'refund' AND l.source = 'withdrawal' THEN l.amount
+		         WHEN l.type = 'debit' AND l.source = 'plan_cancellation_fee' THEN -l.amount
+		         ELSE 0 END), 0) AS computed_locked
+		FROM wallets w
+		LEFT JOIN wallet_ledgers l ON l.wallet_id = w.id
+		GROUP BY w.id, w.ledger_balance, w.locked_balance`).
+		Scan(&totals).Error; err != nil {
+		return nil, err
+	}
+	for _, total := range totals {
+		if total.StoredLedger != total.ComputedLedger {
+			findings = append(findings, Finding{
+				RunID: runID, Severity: SeverityCritical, Code: "wallet_ledger_total_mismatch",
+				EntityType: "wallet", EntityID: total.WalletID,
+				Expected: fmt.Sprintf("%d", total.StoredLedger), Actual: fmt.Sprintf("%d", total.ComputedLedger),
+			})
+		}
+		if total.StoredLocked != total.ComputedLocked {
+			findings = append(findings, Finding{
+				RunID: runID, Severity: SeverityCritical, Code: "wallet_locked_ledger_mismatch",
+				EntityType: "wallet", EntityID: total.WalletID,
+				Expected: fmt.Sprintf("%d", total.StoredLocked), Actual: fmt.Sprintf("%d", total.ComputedLocked),
+			})
+		}
+	}
+
+	type moneyMismatch struct {
+		ID        string
+		Reference string
+		Expected  int64
+		Actual    int64
+		Entries   int64
+	}
+	var depositMismatches []moneyMismatch
+	if err := s.db.WithContext(ctx).Raw(`
+		SELECT d.id, d.reference, d.amount AS expected,
+		       COALESCE(SUM(l.amount),0) AS actual, COUNT(l.id) AS entries
+		FROM wallet_deposits d
+		LEFT JOIN wallet_ledgers l
+		  ON l.source_id::uuid = d.id AND l.type = 'credit'
+		WHERE d.status = 'success'
+		GROUP BY d.id, d.reference, d.amount
+		HAVING COUNT(l.id) <> 1 OR COALESCE(SUM(l.amount),0) <> d.amount`).
+		Scan(&depositMismatches).Error; err != nil {
+		return nil, err
+	}
+	for _, item := range depositMismatches {
+		findings = append(findings, Finding{
+			RunID: runID, Severity: SeverityCritical, Code: "deposit_ledger_mismatch",
+			EntityType: "deposit", EntityID: item.ID,
+			Expected: fmt.Sprintf("amount=%d entries=1", item.Expected),
+			Actual:   fmt.Sprintf("amount=%d entries=%d reference=%s", item.Actual, item.Entries, item.Reference),
+		})
+	}
+
+	var withdrawalMismatches []moneyMismatch
+	if err := s.db.WithContext(ctx).Raw(`
+		SELECT wd.id, wd.reference, wd.amount AS expected,
+		       COALESCE(SUM(l.amount),0) AS actual, COUNT(l.id) AS entries
+		FROM withdrawals wd
+		LEFT JOIN wallet_ledgers l
+		  ON l.source_id::uuid = wd.id AND l.type = 'withdrawal_debit'
+		WHERE wd.status IN ('paid','reversed')
+		GROUP BY wd.id, wd.reference, wd.amount
+		HAVING COUNT(l.id) <> 1 OR COALESCE(SUM(l.amount),0) <> wd.amount`).
+		Scan(&withdrawalMismatches).Error; err != nil {
+		return nil, err
+	}
+	for _, item := range withdrawalMismatches {
+		findings = append(findings, Finding{
+			RunID: runID, Severity: SeverityCritical, Code: "withdrawal_debit_ledger_mismatch",
+			EntityType: "withdrawal", EntityID: item.ID,
+			Expected: fmt.Sprintf("amount=%d entries=1", item.Expected),
+			Actual:   fmt.Sprintf("amount=%d entries=%d reference=%s", item.Actual, item.Entries, item.Reference),
+		})
+	}
+
+	var reversalMismatches []moneyMismatch
+	if err := s.db.WithContext(ctx).Raw(`
+		SELECT wd.id, wd.reference, wd.amount AS expected,
+		       COALESCE(SUM(l.amount),0) AS actual, COUNT(l.id) AS entries
+		FROM withdrawals wd
+		LEFT JOIN wallet_ledgers l
+		  ON l.source_id::uuid = wd.id AND l.type = 'refund'
+		WHERE wd.status = 'reversed'
+		GROUP BY wd.id, wd.reference, wd.amount
+		HAVING COUNT(l.id) <> 1 OR COALESCE(SUM(l.amount),0) <> wd.amount`).
+		Scan(&reversalMismatches).Error; err != nil {
+		return nil, err
+	}
+	for _, item := range reversalMismatches {
+		findings = append(findings, Finding{
+			RunID: runID, Severity: SeverityCritical, Code: "withdrawal_reversal_ledger_mismatch",
+			EntityType: "withdrawal", EntityID: item.ID,
+			Expected: fmt.Sprintf("refund=%d entries=1", item.Expected),
+			Actual:   fmt.Sprintf("refund=%d entries=%d reference=%s", item.Actual, item.Entries, item.Reference),
+		})
+	}
+	return findings, nil
 }
 
 func (s *Service) halt(ctx context.Context, reason string) error {
@@ -160,17 +305,10 @@ func (s *Service) ReconcileStuck(ctx context.Context) error {
 		verify, err := s.provider.VerifyWithdrawal(ctx, reference)
 		if err != nil {
 			log.Printf(`{"level":"error","event":"withdrawal_reconcile_provider_error","reference":%q,"error":%q}`, reference, err.Error())
+			s.publishAlert(ctx, alerts.Input{Severity: alerts.SeverityError, EventType: "withdrawal_provider_timeout", Title: "Withdrawal verification failed", Message: "Provider verification failed for a stuck withdrawal", Fingerprint: "withdrawal-provider:" + reference, Metadata: map[string]interface{}{"reference": reference, "error": err.Error()}})
 			continue
 		}
-		var data struct {
-			Status    string `json:"status"`
-			Reason    string `json:"reason"`
-			Reference string `json:"reference"`
-		}
-		raw, _ := json.Marshal(verify.Data)
-		if json.Unmarshal(raw, &data) != nil {
-			continue
-		}
+		data := verify.Data
 		switch strings.ToLower(data.Status) {
 		case "success":
 			result := s.withdrawals.CompleteProviderWithdrawal(reference, data.Status)
@@ -194,22 +332,18 @@ func (s *Service) ReconcileStuck(ctx context.Context) error {
 		verify, err := s.provider.VerifyDeposit(ctx, deposit.Reference)
 		if err != nil {
 			log.Printf(`{"level":"error","event":"deposit_reconcile_provider_error","reference":%q}`, deposit.Reference)
+			s.publishAlert(ctx, alerts.Input{Severity: alerts.SeverityError, EventType: "deposit_provider_timeout", Title: "Deposit verification failed", Message: "Provider verification failed for a stuck deposit", Fingerprint: "deposit-provider:" + deposit.Reference, Metadata: map[string]interface{}{"reference": deposit.Reference, "error": err.Error()}})
 			continue
 		}
-		var data struct {
-			Status    string `json:"status"`
-			Reference string `json:"reference"`
-			Amount    int64  `json:"amount"`
-			Currency  string `json:"currency"`
-		}
-		raw, _ := json.Marshal(verify.Data)
-		if json.Unmarshal(raw, &data) != nil || strings.ToLower(data.Status) != "success" {
+		data := verify.Data
+		if strings.ToLower(data.Status) != "success" {
 			continue
 		}
 		if data.Reference != deposit.Reference || data.Amount != deposit.Amount || !strings.EqualFold(data.Currency, deposit.Currency) {
 			reason := fmt.Sprintf("deposit verification mismatch for %s", deposit.Reference)
 			_ = s.halt(ctx, reason)
 			log.Printf(`{"level":"critical","event":"deposit_amount_mismatch","reference":%q}`, deposit.Reference)
+			s.publishAlert(ctx, alerts.Input{Severity: alerts.SeverityCritical, EventType: "deposit_verification_mismatch", Title: "Deposit verification mismatch", Message: reason, Fingerprint: "deposit-mismatch:" + deposit.Reference, Metadata: map[string]interface{}{"reference": deposit.Reference}})
 			continue
 		}
 		result := s.wallets.CreditWallet(deposit.Reference, data.Amount)
@@ -231,6 +365,32 @@ func (s *Service) Status(ctx context.Context) (Control, []Finding, error) {
 	return control, findings, err
 }
 
+func (s *Service) InspectReference(ctx context.Context, reference string) (*ReferenceInspection, error) {
+	reference = strings.TrimSpace(reference)
+	result := &ReferenceInspection{Reference: reference, Events: []map[string]interface{}{}}
+	var deposit wallets.WalletDeposit
+	if err := s.db.WithContext(ctx).Where("reference = ?", reference).First(&deposit).Error; err == nil {
+		result.Deposit = &deposit
+	} else if err != nil && err != gorm.ErrRecordNotFound {
+		return nil, err
+	}
+	var withdrawal withdrawals.Withdrawal
+	if err := s.db.WithContext(ctx).
+		Where("reference = ? OR provider_reference = ?", reference, reference).
+		First(&withdrawal).Error; err == nil {
+		result.Withdrawal = &withdrawal
+	} else if err != nil && err != gorm.ErrRecordNotFound {
+		return nil, err
+	}
+	if err := s.db.WithContext(ctx).Table("paystack_events").
+		Select("id, provider_event_id, event_type, status, attempts, last_error, created_at, processed_at").
+		Where("resource_reference = ?", reference).
+		Order("created_at ASC").Find(&result.Events).Error; err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 func (s *Service) StartWorker(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		interval = 5 * time.Minute
@@ -243,8 +403,13 @@ func (s *Service) StartWorker(ctx context.Context, interval time.Duration) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := s.ReconcileStuck(ctx); err != nil {
-					log.Printf(`{"level":"error","event":"stuck_transaction_reconciliation_failed","error":%q}`, err.Error())
+				control, _, statusErr := s.Status(ctx)
+				if statusErr != nil {
+					log.Printf(`{"level":"error","event":"reconciliation_status_failed","error":%q}`, statusErr.Error())
+				} else if !control.ProcessingHalted {
+					if err := s.ReconcileStuck(ctx); err != nil {
+						log.Printf(`{"level":"error","event":"stuck_transaction_reconciliation_failed","error":%q}`, err.Error())
+					}
 				}
 				if _, err := s.RunFinancialCheck(ctx); err != nil {
 					log.Printf(`{"level":"error","event":"financial_reconciliation_failed","error":%q}`, err.Error())

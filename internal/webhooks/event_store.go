@@ -1,15 +1,18 @@
 package webhooks
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/kuipid01/salary-vault/internal/alerts"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -40,6 +43,8 @@ type PaystackEvent struct {
 	LastError           string     `gorm:"type:text" json:"last_error,omitempty"`
 	NextRetryAt         *time.Time `gorm:"index" json:"next_retry_at,omitempty"`
 	ProcessingStartedAt *time.Time `json:"processing_started_at,omitempty"`
+	LeaseExpiresAt      *time.Time `gorm:"index" json:"lease_expires_at,omitempty"`
+	LeaseToken          string     `gorm:"type:varchar(64);index" json:"-"`
 	ProcessedAt         *time.Time `json:"processed_at,omitempty"`
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
@@ -56,8 +61,11 @@ func (e *PaystackEvent) BeforeCreate(_ *gorm.DB) error {
 }
 
 type EventStore struct {
-	db *gorm.DB
+	db     *gorm.DB
+	alerts *alerts.Service
 }
+
+func (s *EventStore) SetAlertPublisher(publisher *alerts.Service) { s.alerts = publisher }
 
 func NewEventStore(db *gorm.DB) *EventStore {
 	return &EventStore{db: db}
@@ -120,7 +128,8 @@ func (s *EventStore) Receive(event *PaystackEvent) (inserted bool, err error) {
 	return result.RowsAffected == 1, result.Error
 }
 
-// Claim moves a due event into processing while holding a row lock.
+// Claim moves one explicitly selected event into processing. Recovery workers
+// use ClaimDueBatch so selection and claiming remain one atomic operation.
 func (s *EventStore) Claim(id string) (*PaystackEvent, bool, error) {
 	var claimed *PaystackEvent
 	err := s.db.Transaction(func(tx *gorm.DB) error {
@@ -129,23 +138,41 @@ func (s *EventStore) Claim(id string) (*PaystackEvent, bool, error) {
 			Where("id = ?", id).First(&event).Error; err != nil {
 			return err
 		}
-		now := time.Now()
 		if event.Status == EventStatusProcessed || event.Status == EventStatusDead {
 			return nil
 		}
-		if event.Status == EventStatusProcessing &&
-			event.ProcessingStartedAt != nil &&
-			event.ProcessingStartedAt.After(now.Add(-5*time.Minute)) {
+		var leaseActive bool
+		if event.Status == EventStatusProcessing {
+			if err := tx.Raw("SELECT lease_expires_at IS NOT NULL AND lease_expires_at > NOW() FROM paystack_events WHERE id = ?", id).
+				Scan(&leaseActive).Error; err != nil {
+				return err
+			}
+		}
+		if leaseActive {
 			return nil
 		}
-		if event.NextRetryAt != nil && event.NextRetryAt.After(now) {
+		var retryNotDue bool
+		if event.NextRetryAt != nil {
+			if err := tx.Raw("SELECT next_retry_at > NOW() FROM paystack_events WHERE id = ?", id).
+				Scan(&retryNotDue).Error; err != nil {
+				return err
+			}
+		}
+		if retryNotDue {
 			return nil
 		}
-		event.Status = EventStatusProcessing
-		event.Attempts++
-		event.ProcessingStartedAt = &now
-		event.NextRetryAt = nil
-		if err := tx.Save(&event).Error; err != nil {
+		leaseToken := uuid.NewString()
+		if err := tx.Model(&PaystackEvent{}).Where("id = ?", id).Updates(map[string]interface{}{
+			"status":                EventStatusProcessing,
+			"attempts":              gorm.Expr("attempts + 1"),
+			"processing_started_at": gorm.Expr("NOW()"),
+			"lease_expires_at":      gorm.Expr("NOW() + INTERVAL '5 minutes'"),
+			"lease_token":           leaseToken,
+			"next_retry_at":         nil,
+		}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("id = ?", id).First(&event).Error; err != nil {
 			return err
 		}
 		claimed = &event
@@ -154,25 +181,107 @@ func (s *EventStore) Claim(id string) (*PaystackEvent, bool, error) {
 	return claimed, claimed != nil, err
 }
 
-func (s *EventStore) MarkProcessed(id string) error {
-	now := time.Now()
-	return s.db.Model(&PaystackEvent{}).Where("id = ?", id).Updates(map[string]interface{}{
-		"status":                EventStatusProcessed,
-		"processed_at":          &now,
-		"processing_started_at": nil,
-		"next_retry_at":         nil,
-		"last_error":            "",
-	}).Error
+// ClaimDueBatch atomically selects and claims different rows across instances.
+// SKIP LOCKED prevents workers on other nodes from waiting on the same batch.
+func (s *EventStore) ClaimDueBatch(limit int) ([]PaystackEvent, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 25
+	}
+	var claimed []PaystackEvent
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		var candidates []PaystackEvent
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
+			Where(
+				"(status IN ? AND (next_retry_at IS NULL OR next_retry_at <= NOW())) OR "+
+					"(status = ? AND (lease_expires_at IS NULL OR lease_expires_at <= NOW()))",
+				[]string{EventStatusPending, EventStatusRetrying},
+				EventStatusProcessing,
+			).
+			Order("created_at ASC").
+			Limit(limit).
+			Find(&candidates).Error; err != nil {
+			return err
+		}
+		if len(candidates) == 0 {
+			return nil
+		}
+		ids := make([]string, 0, len(candidates))
+		for i := range candidates {
+			ids = append(ids, candidates[i].ID)
+		}
+		leaseToken := uuid.NewString()
+		if err := tx.Model(&PaystackEvent{}).Where("id IN ?", ids).Updates(map[string]interface{}{
+			"status":                EventStatusProcessing,
+			"attempts":              gorm.Expr("attempts + 1"),
+			"processing_started_at": gorm.Expr("NOW()"),
+			"lease_expires_at":      gorm.Expr("NOW() + INTERVAL '5 minutes'"),
+			"lease_token":           leaseToken,
+			"next_retry_at":         nil,
+		}).Error; err != nil {
+			return err
+		}
+		return tx.Where("id IN ?", ids).Order("created_at ASC").Find(&claimed).Error
+	})
+	return claimed, err
+}
+
+func (s *EventStore) Heartbeat(id, leaseToken string) error {
+	result := s.db.Model(&PaystackEvent{}).
+		Where("id = ? AND status = ? AND lease_token = ?", id, EventStatusProcessing, leaseToken).
+		Update("lease_expires_at", gorm.Expr("NOW() + INTERVAL '5 minutes'"))
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return errors.New("event lease is no longer owned")
+	}
+	return nil
+}
+
+// CompleteInTransaction commits the financial mutation and inbox completion
+// together. A stale worker cannot commit after its lease has been reassigned.
+func (s *EventStore) CompleteInTransaction(event *PaystackEvent, fn func(tx *gorm.DB) error) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var current PaystackEvent
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ?", event.ID).First(&current).Error; err != nil {
+			return err
+		}
+		if current.Status != EventStatusProcessing || current.LeaseToken == "" || current.LeaseToken != event.LeaseToken {
+			return errors.New("event processing lease was lost")
+		}
+		if err := fn(tx); err != nil {
+			return err
+		}
+		result := tx.Model(&PaystackEvent{}).
+			Where("id = ? AND status = ? AND lease_token = ?", event.ID, EventStatusProcessing, event.LeaseToken).
+			Updates(map[string]interface{}{
+				"status":                EventStatusProcessed,
+				"processed_at":          gorm.Expr("NOW()"),
+				"processing_started_at": nil,
+				"lease_expires_at":      nil,
+				"lease_token":           "",
+				"next_retry_at":         nil,
+				"last_error":            "",
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return errors.New("event processing lease was lost before completion")
+		}
+		return nil
+	})
 }
 
 func (s *EventStore) MarkFailed(event *PaystackEvent, processingErr error) error {
 	status := EventStatusRetrying
-	var retryAt *time.Time
+	var retryAt interface{}
 	if event.Attempts >= maxEventAttempts {
 		status = EventStatusDead
 	} else {
-		next := time.Now().Add(eventRetryDelay(event.Attempts))
-		retryAt = &next
+		seconds := int64(eventRetryDelay(event.Attempts).Seconds())
+		retryAt = gorm.Expr("NOW() + (? * INTERVAL '1 second')", seconds)
 	}
 	message := "unknown processing error"
 	if processingErr != nil {
@@ -181,32 +290,48 @@ func (s *EventStore) MarkFailed(event *PaystackEvent, processingErr error) error
 	if len(message) > 2000 {
 		message = message[:2000]
 	}
-	return s.db.Model(&PaystackEvent{}).Where("id = ?", event.ID).Updates(map[string]interface{}{
-		"status":                status,
-		"last_error":            message,
-		"next_retry_at":         retryAt,
-		"processing_started_at": nil,
-	}).Error
+	result := s.db.Model(&PaystackEvent{}).
+		Where("id = ? AND status = ? AND lease_token = ?", event.ID, EventStatusProcessing, event.LeaseToken).
+		Updates(map[string]interface{}{
+			"status":                status,
+			"last_error":            message,
+			"next_retry_at":         retryAt,
+			"processing_started_at": nil,
+			"lease_expires_at":      nil,
+			"lease_token":           "",
+		})
+	if result.Error == nil && status == EventStatusDead && s.alerts != nil {
+		if err := s.alerts.Publish(context.Background(), alerts.Input{Severity: alerts.SeverityCritical, EventType: "webhook_dead", Title: "Webhook exhausted all retries", Message: "A durable Paystack event could not be processed", Fingerprint: "webhook-dead:" + event.ProviderEventID, Metadata: map[string]interface{}{"event_id": event.ProviderEventID, "event_type": event.EventType, "reference": event.ResourceReference, "error": message}}); err != nil {
+			log.Printf(`{"level":"error","event":"operational_alert_enqueue_failed","alert_type":"webhook_dead","error":%q}`, err.Error())
+		}
+	}
+	return result.Error
 }
 
-func (s *EventStore) Due(limit int) ([]PaystackEvent, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 50
+func (s *EventStore) FinancialProcessingHalted() (bool, error) {
+	var row struct {
+		ProcessingHalted bool
 	}
-	var events []PaystackEvent
-	err := s.db.
-		Where(
-			"(status IN ? AND (next_retry_at IS NULL OR next_retry_at <= ?)) OR "+
-				"(status = ? AND processing_started_at < ?)",
-			[]string{EventStatusPending, EventStatusRetrying},
-			time.Now(),
-			EventStatusProcessing,
-			time.Now().Add(-5*time.Minute),
-		).
-		Order("created_at ASC").
-		Limit(limit).
-		Find(&events).Error
-	return events, err
+	err := s.db.Table("reconciliation_controls").
+		Select("processing_halted").
+		Where("id = ?", 1).
+		Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	return row.ProcessingHalted, err
+}
+
+func (s *EventStore) MakeDue(id string) error {
+	return s.db.Model(&PaystackEvent{}).
+		Where("id = ? AND status <> ?", id, EventStatusProcessed).
+		Updates(map[string]interface{}{
+			"status":           EventStatusRetrying,
+			"next_retry_at":    nil,
+			"last_error":       "",
+			"lease_expires_at": nil,
+			"lease_token":      "",
+		}).Error
 }
 
 func eventRetryDelay(attempt int) time.Duration {

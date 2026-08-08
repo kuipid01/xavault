@@ -36,8 +36,10 @@ func main() {
 
 	fmt.Println("Database is connected")
 
-	//run migations
-	database.RunMigrations(db, cfg)
+	if err := database.PrepareSchema(context.Background(), db, cfg); err != nil {
+		fmt.Println("database schema is not ready:", err)
+		os.Exit(1)
+	}
 
 	newContainer := app.NewContainer(db, cfg)
 	fiberApp := app.New(cfg, newContainer)
@@ -45,6 +47,7 @@ func main() {
 	defer stopWorkers()
 	newContainer.WebhookHND.StartRecoveryWorker(workerCtx, time.Minute)
 	newContainer.ReconciliationSVC.StartWorker(workerCtx, 5*time.Minute)
+	newContainer.AlertSVC.StartWorker(workerCtx, 30*time.Second)
 
 	fmt.Println("Server is running on", addr)
 	fiberApp.Get("/swagger/*", swagger.HandlerDefault)

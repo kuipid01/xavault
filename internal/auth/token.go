@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 type TokenService struct {
@@ -42,6 +43,7 @@ func (t *TokenService) GenerateAccessToken(userID string, email string, tokenTyp
 		Email:     email,
 		TokenType: tokenType,
 		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        uuid.NewString(),
 			Subject:   userID,
 			Issuer:    t.Issuer,
 			IssuedAt:  jwt.NewNumericDate(now),

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/kuipid01/salary-vault/internal/alerts"
 	"github.com/kuipid01/salary-vault/internal/auth"
 	bankaccounts "github.com/kuipid01/salary-vault/internal/bank_accounts"
 	"github.com/kuipid01/salary-vault/internal/config"
@@ -14,6 +15,7 @@ import (
 	"github.com/kuipid01/salary-vault/internal/reconciliation"
 	clientNetwork "github.com/kuipid01/salary-vault/internal/shared/client"
 	client "github.com/kuipid01/salary-vault/internal/shared/client/idempotence"
+	sharedmiddleware "github.com/kuipid01/salary-vault/internal/shared/middleware"
 	spendingplans "github.com/kuipid01/salary-vault/internal/spending_plans"
 	"github.com/kuipid01/salary-vault/internal/subscription"
 	"github.com/kuipid01/salary-vault/internal/users"
@@ -53,6 +55,7 @@ type Container struct {
 	SubscriptionHND   *subscription.SubscriptionHandler
 	ReconciliationHND *reconciliation.Handler
 	ReconciliationSVC *reconciliation.Service
+	AlertSVC          *alerts.Service
 	db                *gorm.DB
 }
 
@@ -94,12 +97,21 @@ func NewContainer(db *gorm.DB, cfg *config.Config) *Container {
 		walletModule.Repo, bankAccountsModule.Repo, userRepo, reusableClient, fundsRepo,
 	)
 	mailer := mail.NewBrevoMailer()
+	var alertDestinations []alerts.Destination
+	if cfg.AlertEmailTo != "" {
+		alertDestinations = append(alertDestinations, alerts.NewBrevoDestination(mailer, cfg.AlertEmailTo))
+	}
+	alertService := alerts.NewService(db, 15*time.Minute, alertDestinations...)
+	sharedmiddleware.ConfigureSharedRateLimiter(sharedmiddleware.NewPostgresRateLimitStore(db), alertService)
 	reconciliationService := reconciliation.NewService(db, paystackProvider, walletModule.Svc, withdrawaModule.Svc)
+	reconciliationService.SetAlertPublisher(alertService)
+	webhookHandler := webhooks.NewWebhookHandler(db, walletModule.Svc, withdrawaModule.Svc, subService)
+	webhookHandler.SetAlertPublisher(alertService)
 
 	return &Container{
 		Auth:              auth.NewModule(db, walletModule.Svc, mailer),
 		Wallets:           walletModule,
-		WebhookHND:        webhooks.NewWebhookHandler(db, walletModule.Svc, withdrawaModule.Svc, subService),
+		WebhookHND:        webhookHandler,
 		PlansHND:          planHandler,
 		EnvelopHND:        envelopeHandler,
 		WithdrawalModule:  withdrawaModule,
@@ -108,6 +120,7 @@ func NewContainer(db *gorm.DB, cfg *config.Config) *Container {
 		SubscriptionHND:   subHandler,
 		ReconciliationHND: reconciliation.NewHandler(reconciliationService),
 		ReconciliationSVC: reconciliationService,
+		AlertSVC:          alertService,
 		db:                db,
 	}
 }

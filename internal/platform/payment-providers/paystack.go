@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kuipid01/salary-vault/internal/shared/client"
@@ -17,6 +18,13 @@ type PaystackProvider struct {
 	apiKey         string
 	baseUrl        string
 	reusableClient *client.ReusableClient
+	bcache         BankCache
+}
+type BankCache struct {
+	mu        sync.RWMutex
+	banks     []PaystackBank
+	fetchedAt time.Time
+	ttl       time.Duration
 }
 
 func NewPaystackProvider(reusableClient *client.ReusableClient) *PaystackProvider {
@@ -26,7 +34,22 @@ func NewPaystackProvider(reusableClient *client.ReusableClient) *PaystackProvide
 		reusableClient: reusableClient,
 	}
 }
+func (p *PaystackProvider) Get() ([]PaystackBank, bool) {
+	p.bcache.mu.RLock()
+	defer p.bcache.mu.RUnlock()
+	if time.Since(p.bcache.fetchedAt) < p.bcache.ttl {
 
+		return p.bcache.banks, true
+	}
+	return nil, false
+}
+func (p *PaystackProvider) Set(banks []PaystackBank) bool {
+	p.bcache.mu.Lock()
+	defer p.bcache.mu.Unlock()
+	p.bcache.banks = banks
+	p.bcache.fetchedAt = time.Now()
+	return true
+}
 func (p *PaystackProvider) InitiateDeposit(ctx context.Context, data *DepositBody) (*DepositResponse, error) {
 
 	// 3. Define headers explicitly for Paystack
@@ -56,14 +79,14 @@ func (p *PaystackProvider) InitiateDeposit(ctx context.Context, data *DepositBod
 	}, nil
 }
 
-func (p *PaystackProvider) VerifyDeposit(ctx context.Context, reference string) (*DepositResponse, error) {
+func (p *PaystackProvider) VerifyDeposit(ctx context.Context, reference string) (*VerifyTransactionResponse, error) {
 	// 3. Define headers explicitly for Paystack
 	headers := map[string]string{
 		"Authorization": "Bearer " + p.apiKey,
 	}
 
 	// 4. Properly initialize the target map so it's not nil
-	respTarget := make(map[string]interface{})
+	var respTarget VerifyTransactionResponse
 
 	// 5. Pass data directly (no manual json.Marshal here)
 	url := p.baseUrl + "/transaction/verify/" + reference
@@ -72,20 +95,24 @@ func (p *PaystackProvider) VerifyDeposit(ctx context.Context, reference string) 
 		return nil, err
 	}
 
-	status, _ := respTarget["status"].(bool)
-	if !status {
-		return nil, fmt.Errorf("paystack deposit verification failed: %v", respTarget["message"])
+	if !respTarget.Status {
+		return nil, fmt.Errorf("paystack deposit verification failed: %s", respTarget.Message)
 	}
-
-	return &DepositResponse{
-		Status:  status,
-		Message: "Deposit verified successfully",
-		Data:    respTarget,
-	}, nil
+	return &respTarget, nil
 
 }
 
 func (p *PaystackProvider) ListBanks(ctx context.Context) (*ListBanksResponse, error) {
+	banks, found := p.Get()
+	if found {
+		fmt.Println("Banks list fetched from cache")
+		return &ListBanksResponse{
+			Status:  true,
+			Message: "Banks list fetched successfully",
+			Data:    banks,
+		}, nil
+	}
+
 	headers := map[string]string{
 		"Authorization": "Bearer " + p.apiKey,
 	}
@@ -102,6 +129,7 @@ func (p *PaystackProvider) ListBanks(ctx context.Context) (*ListBanksResponse, e
 		return nil, fmt.Errorf("paystack bank list failed: %s", respTarget.Message)
 	}
 
+	p.Set(respTarget.Data)
 	return &respTarget, nil
 }
 
@@ -301,25 +329,24 @@ func (p *PaystackProvider) InitiateTransfer(
 	return &respTarget, nil
 }
 
-func (p *PaystackProvider) VerifyWithdrawal(ctx context.Context, reference string) (*WithdrawalResponse, error) {
+func (p *PaystackProvider) VerifyWithdrawal(ctx context.Context, reference string) (*VerifyTransferResponse, error) {
 	// 3. Define headers explicitly for Paystack
 	headers := map[string]string{
 		"Authorization": "Bearer " + p.apiKey,
 	}
 
 	// 4. Properly initialize the target map so it's not nil
-	respTarget := make(map[string]interface{})
+	var respTarget VerifyTransferResponse
 
 	// 5. Pass data directly (no manual json.Marshal here)
-	url := p.baseUrl + "/transfer/" + reference
+	url := p.baseUrl + "/transfer/verify/" + reference
 	err := p.reusableClient.DoRequest(ctx, http.MethodGet, url, headers, nil, &respTarget)
 	if err != nil {
 		return nil, err
 	}
 
-	return &WithdrawalResponse{
-		Status:  true,
-		Message: "Withdrawal verified successfully",
-		Data:    respTarget,
-	}, nil
+	if !respTarget.Status {
+		return nil, fmt.Errorf("paystack withdrawal verification failed: %s", respTarget.Message)
+	}
+	return &respTarget, nil
 }

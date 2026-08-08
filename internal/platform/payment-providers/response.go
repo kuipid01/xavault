@@ -8,10 +8,22 @@ type DepositResponse struct {
 	Data    interface{} `json:"data"`
 }
 
-type WithdrawalResponse struct {
-	Status  bool        `json:"status"`
-	Message string      `json:"message"`
-	Data    interface{} `json:"data"`
+type VerifyTransactionData struct {
+	ID              int64      `json:"id"`
+	Reference       string     `json:"reference"`
+	Status          string     `json:"status"`
+	Amount          int64      `json:"amount"`
+	Currency        string     `json:"currency"`
+	Domain          string     `json:"domain"`
+	GatewayResponse string     `json:"gateway_response"`
+	PaidAt          *time.Time `json:"paid_at"`
+	CreatedAt       time.Time  `json:"created_at"`
+}
+
+type VerifyTransactionResponse struct {
+	Status  bool                  `json:"status"`
+	Message string                `json:"message"`
+	Data    VerifyTransactionData `json:"data"`
 }
 
 type DepositBody struct {

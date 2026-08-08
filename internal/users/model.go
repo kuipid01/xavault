@@ -9,7 +9,7 @@ import (
 type User struct {
 	ID                          string     `json:"id"`
 	Email                       string     `json:"email"`
-	Password                    string     `json:"password"`
+	Password                    string     `json:"-"`
 	FirstName                   string     `json:"first_name"`
 	LastName                    string     `json:"last_name"`
 	MailVerified                bool       `json:"mail_verified"`
@@ -21,11 +21,11 @@ type User struct {
 	ProfileImageURL             *string    `json:"profile_image_url"`
 	ProfileImagePublicID        *string    `json:"-"`
 	EmailVerifiedAt             *time.Time `json:"email_verified_at"`
-	VerificationToken           *string    `json:"verification_token"`
-	VerificationTokenExpiresAt  *time.Time `json:"verification_token_expires_at"`
-	PasswordResetToken          *string    `json:"password_reset_token"`
-	PasswordResetTokenExpiresAt *time.Time `json:"password_reset_token_expires_at"`
-	RefreshToken                *string    `json:"refresh_token"`
+	VerificationToken           *string    `json:"-"`
+	VerificationTokenExpiresAt  *time.Time `json:"-"`
+	PasswordResetToken          *string    `json:"-"`
+	PasswordResetTokenExpiresAt *time.Time `json:"-"`
+	RefreshToken                *string    `json:"-"`
 	WithdrawalPinHash           *string    `json:"-"`
 	WithdrawalPinFailedAttempts int        `json:"-" gorm:"not null;default:0"`
 	WithdrawalPinLockedAt       *time.Time `json:"-"`

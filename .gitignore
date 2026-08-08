@@ -1,5 +1,6 @@
 .env
 bin/
 tmp/
+backups/
 *.log
 .DS_Store

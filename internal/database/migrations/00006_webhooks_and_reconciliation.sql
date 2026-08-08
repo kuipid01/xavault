@@ -1,3 +1,5 @@
+-- +goose Up
+-- Durable provider inbox and financial reconciliation controls.
 CREATE TABLE IF NOT EXISTS paystack_events (
     id uuid PRIMARY KEY,
     provider_event_id varchar(220) NOT NULL UNIQUE,
@@ -11,12 +13,16 @@ CREATE TABLE IF NOT EXISTS paystack_events (
     last_error text,
     next_retry_at timestamptz,
     processing_started_at timestamptz,
+    lease_expires_at timestamptz,
+    lease_token uuid,
     processed_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT NOW(),
     updated_at timestamptz NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_paystack_events_status ON paystack_events(status);
 CREATE INDEX IF NOT EXISTS idx_paystack_events_next_retry_at ON paystack_events(next_retry_at);
+CREATE INDEX IF NOT EXISTS idx_paystack_events_lease_expires_at ON paystack_events(lease_expires_at);
+CREATE INDEX IF NOT EXISTS idx_paystack_events_lease_token ON paystack_events(lease_token);
 CREATE INDEX IF NOT EXISTS idx_paystack_events_resource_reference ON paystack_events(resource_reference);
 
 CREATE TABLE IF NOT EXISTS reconciliation_controls (

@@ -19,6 +19,7 @@ import (
 	"github.com/kuipid01/salary-vault/internal/shared/response"
 	"github.com/kuipid01/salary-vault/internal/shared/security"
 	"github.com/kuipid01/salary-vault/internal/subscription"
+	"gorm.io/gorm"
 )
 
 type WalletService struct {
@@ -369,60 +370,10 @@ func (s *WalletService) CreditWallet(reference string, webhookAmount int64) *res
 
 	var walletdeposit *WalletDeposit
 	err := s.repo.ExecuteInTransaction(func(txRepo *WalletRepository) error {
-		deposit, err := txRepo.GetDepositByReferenceForUpdate(reference)
-		if err != nil {
-			return err
-		}
-		walletdeposit = deposit
-		if deposit.Status == "success" {
-			return ErrDepositAlreadyProcessed
-		}
-		if deposit.Amount != webhookAmount {
-			return ErrDepositAmountMismatch
-		}
-
-		wallet, err := txRepo.GetWalletByOwnerIDForUpdate(deposit.UserID)
-		if err != nil {
-			return err
-		}
-		if err := s.canAcceptDeposit(txRepo, deposit.UserID, webhookAmount); err != nil {
-			return err
-		}
-
-		balanceBefore := wallet.LedgerBalance
-		wallet.AvailableBalance += webhookAmount
-		wallet.LedgerBalance += webhookAmount
-
-		if _, err := txRepo.Update(wallet); err != nil {
-			return err
-		}
-		if _, err := txRepo.UpdateDepositStatus(reference, "success"); err != nil {
-			return err
-		}
-
-		id := security.GenateUniqueID()
-		now := time.Now()
-		walletReq := &WalletLedger{
-			ID:            id,
-			Amount:        webhookAmount,
-			UserID:        deposit.UserID,
-			WalletID:      deposit.WalletID,
-			Currency:      deposit.Currency,
-			Type:          "credit",
-			BalanceBefore: balanceBefore,
-			BalanceAfter:  wallet.LedgerBalance,
-			Reference:     reference,
-			CreatedAt:     now,
-			Source:        "Paystack",
-			SourceID:      deposit.ID,
-			Description:   "Deposit by card",
-		}
-		_, err = txRepo.LogWalletLedger(walletReq)
-		return err
+		var txErr error
+		walletdeposit, txErr = s.CreditWalletTx(txRepo, reference, webhookAmount)
+		return txErr
 	})
-	if errors.Is(err, ErrDepositAlreadyProcessed) {
-		return &response.APIResponse{Success: true, Message: "Deposit already completed", Data: walletdeposit}
-	}
 	if errors.Is(err, ErrDepositAmountMismatch) {
 		expected := int64(0)
 		if walletdeposit != nil {
@@ -446,6 +397,56 @@ func (s *WalletService) CreditWallet(reference string, webhookAmount int64) *res
 		Message: "Wallet credited successfully",
 		Data:    walletdeposit,
 	}
+}
+
+// CreditWalletTx applies a verified card deposit inside the caller's
+// transaction, allowing the webhook inbox row to commit atomically with it.
+func (s *WalletService) CreditWalletTx(txRepo *WalletRepository, reference string, webhookAmount int64) (*WalletDeposit, error) {
+	if webhookAmount <= 0 {
+		return nil, ErrInvalidWalletAmount
+	}
+	deposit, err := txRepo.GetDepositByReferenceForUpdate(reference)
+	if err != nil {
+		return nil, err
+	}
+	if deposit.Amount != webhookAmount {
+		return deposit, ErrDepositAmountMismatch
+	}
+	if deposit.Status == "success" {
+		return deposit, nil
+	}
+	wallet, err := txRepo.GetWalletByOwnerIDForUpdate(deposit.UserID)
+	if err != nil {
+		return deposit, err
+	}
+	if err := s.canAcceptDeposit(txRepo, deposit.UserID, webhookAmount); err != nil {
+		return deposit, err
+	}
+	balanceBefore := wallet.LedgerBalance
+	wallet.AvailableBalance += webhookAmount
+	wallet.LedgerBalance += webhookAmount
+	if _, err := txRepo.Update(wallet); err != nil {
+		return deposit, err
+	}
+	if _, err := txRepo.UpdateDepositStatus(reference, "success"); err != nil {
+		return deposit, err
+	}
+	ledger := &WalletLedger{
+		ID: security.GenateUniqueID(), Amount: webhookAmount, UserID: deposit.UserID,
+		WalletID: deposit.WalletID, Currency: deposit.Currency, Type: WalletLedgerTypeCredit,
+		BalanceBefore: balanceBefore, BalanceAfter: wallet.LedgerBalance,
+		Reference: reference, CreatedAt: time.Now(), Source: "Paystack",
+		SourceID: deposit.ID, Description: "Deposit by card",
+	}
+	if _, err := txRepo.LogWalletLedger(ledger); err != nil {
+		return deposit, err
+	}
+	deposit.Status = "success"
+	return deposit, nil
+}
+
+func (s *WalletService) CreditWalletWithTx(tx *gorm.DB, reference string, amount int64) (*WalletDeposit, error) {
+	return s.CreditWalletTx(NewWalletRepository(tx), reference, amount)
 }
 
 func (s *WalletService) CreditDedicatedAccountTransfer(reference string, webhookAmount int64, accountNumber string) *response.APIResponse {
@@ -543,6 +544,83 @@ func (s *WalletService) CreditDedicatedAccountTransfer(reference string, webhook
 		Message: "Dedicated account transfer credited successfully",
 		Data:    deposit,
 	}
+}
+
+// CreditDedicatedAccountTransferWithTx makes creation of the provider deposit,
+// wallet credit, ledger entry, and webhook completion one transaction.
+func (s *WalletService) CreditDedicatedAccountTransferWithTx(
+	tx *gorm.DB,
+	reference string,
+	webhookAmount int64,
+	accountNumber string,
+) (*WalletDeposit, error) {
+	if webhookAmount <= 0 {
+		return nil, ErrInvalidWalletAmount
+	}
+	txRepo := NewWalletRepository(tx)
+	existing, err := txRepo.GetDepositByReferenceForUpdate(reference)
+	if err == nil {
+		if existing.Amount != webhookAmount {
+			return existing, ErrDepositAmountMismatch
+		}
+		if existing.Status == "success" {
+			return existing, nil
+		}
+		return s.CreditWalletTx(txRepo, reference, webhookAmount)
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+
+	wallet, err := txRepo.GetWalletByDedicatedAccountNumberForUpdate(accountNumber)
+	if err != nil {
+		return nil, err
+	}
+	// Recheck after acquiring the wallet lock; another delivery may have
+	// created this reference while this transaction waited.
+	existing, err = txRepo.GetDepositByReferenceForUpdate(reference)
+	if err == nil {
+		if existing.Amount != webhookAmount {
+			return existing, ErrDepositAmountMismatch
+		}
+		if existing.Status == "success" {
+			return existing, nil
+		}
+		return s.CreditWalletTx(txRepo, reference, webhookAmount)
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	if err := s.canAcceptDeposit(txRepo, wallet.UserID, webhookAmount); err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	deposit := &WalletDeposit{
+		ID: security.GenateUniqueID(), UserID: wallet.UserID, WalletID: wallet.ID,
+		Reference: reference, Amount: webhookAmount, Currency: wallet.Currency,
+		Status: "success", Provider: "paystack_dedicated_account",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if _, err := txRepo.CreateDeposit(deposit); err != nil {
+		return nil, err
+	}
+	balanceBefore := wallet.LedgerBalance
+	wallet.AvailableBalance += webhookAmount
+	wallet.LedgerBalance += webhookAmount
+	if _, err := txRepo.Update(wallet); err != nil {
+		return nil, err
+	}
+	ledger := &WalletLedger{
+		ID: security.GenateUniqueID(), Amount: webhookAmount, UserID: wallet.UserID,
+		WalletID: wallet.ID, Currency: wallet.Currency, Type: WalletLedgerTypeCredit,
+		BalanceBefore: balanceBefore, BalanceAfter: wallet.LedgerBalance,
+		Reference: reference, CreatedAt: now, Source: "Paystack Dedicated Account",
+		SourceID: deposit.ID, Description: "Deposit by bank transfer",
+	}
+	if _, err := txRepo.LogWalletLedger(ledger); err != nil {
+		return nil, err
+	}
+	return deposit, nil
 }
 
 func (s *WalletService) GetAllDeposits(userId string) *response.APIResponse {
@@ -695,8 +773,7 @@ func (s *WalletService) VerifyDeposit(ctx context.Context, userID, reference str
 		}
 	}
 
-	paystackData := paystackPayloadData(verificationResult.Data)
-	transactionStatus := strings.ToLower(stringFromMap(paystackData, "status"))
+	transactionStatus := strings.ToLower(verificationResult.Data.Status)
 	if !verificationResult.Status || transactionStatus != "success" {
 		return &response.APIResponse{
 			Success: false,
@@ -705,8 +782,8 @@ func (s *WalletService) VerifyDeposit(ctx context.Context, userID, reference str
 		}
 	}
 
-	amount, ok := int64FromMap(paystackData, "amount")
-	if !ok || amount <= 0 {
+	amount := verificationResult.Data.Amount
+	if amount <= 0 {
 		return &response.APIResponse{
 			Success: false,
 			Message: "Invalid verified deposit amount",

@@ -31,8 +31,17 @@ func AdminOnly() fiber.Handler {
 func RegisterRoutes(v1 fiber.Router, handler *Handler) {
 	group := v1.Group("/admin/reconciliation", AdminOnly())
 	group.Get("/", handler.status)
+	group.Get("/reference/:reference", handler.inspect)
 	group.Post("/run", handler.run)
 	group.Post("/resume", handler.resume)
+}
+
+func (h *Handler) inspect(c *fiber.Ctx) error {
+	result, err := h.service.InspectReference(c.UserContext(), c.Params("reference"))
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "reference_inspection_failed"})
+	}
+	return c.JSON(result)
 }
 
 func (h *Handler) status(c *fiber.Ctx) error {

@@ -2,6 +2,7 @@ package mail
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,6 +15,7 @@ type BrevoMailer struct {
 	SenderName  string
 	SenderEmail string
 	Client      *http.Client
+	Endpoint    string
 }
 
 func NewBrevoMailer() *BrevoMailer {
@@ -23,6 +25,7 @@ func NewBrevoMailer() *BrevoMailer {
 		SenderName:  os.Getenv("BREVO_SENDER_NAME"),
 		SenderEmail: os.Getenv("BREVO_SENDER_EMAIL"),
 		Client:      &http.Client{Timeout: 10 * time.Second},
+		Endpoint:    "https://api.brevo.com/v3/smtp/email",
 	}
 }
 
@@ -45,6 +48,7 @@ type BrevoSendEmailPayload struct {
 }
 
 func (b *BrevoMailer) sendHTMLMail(
+	ctx context.Context,
 	toEmail string,
 	toName string,
 	subject string,
@@ -72,9 +76,9 @@ func (b *BrevoMailer) sendHTMLMail(
 		return err
 	}
 
-	req, err := http.NewRequest(
+	req, err := http.NewRequestWithContext(ctx,
 		http.MethodPost,
-		"https://api.brevo.com/v3/smtp/email",
+		b.Endpoint,
 		bytes.NewBuffer(body),
 	)
 	if err != nil {
@@ -98,6 +102,10 @@ func (b *BrevoMailer) sendHTMLMail(
 	return nil
 }
 
+func (b *BrevoMailer) SendOperationalAlert(ctx context.Context, email, subject, htmlContent string) error {
+	return b.sendHTMLMail(ctx, email, "XAVAULT Operations", subject, htmlContent, []string{"operational-alert"})
+}
+
 func (b *BrevoMailer) SendMailVerification(email, otp string) error {
 	data := struct {
 		Name          string
@@ -117,7 +125,7 @@ func (b *BrevoMailer) SendMailVerification(email, otp string) error {
 		return err
 	}
 
-	err = b.sendHTMLMail(
+	err = b.sendHTMLMail(context.Background(),
 		email,
 		"",
 		"Please Verify Your Email",
@@ -146,7 +154,7 @@ func (b *BrevoMailer) SendForgetPasswordMail(email, otp string) error {
 		return err
 	}
 
-	err = b.sendHTMLMail(
+	err = b.sendHTMLMail(context.Background(),
 		email,
 		"",
 		"Reset Your Password",
@@ -175,7 +183,7 @@ func (b *BrevoMailer) SendWithdrawalPinOTP(email string, otp string) error {
 		return err
 	}
 
-	return b.sendHTMLMail(
+	return b.sendHTMLMail(context.Background(),
 		email,
 		"",
 		"Reset Your Withdrawal PIN",

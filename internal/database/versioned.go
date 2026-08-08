@@ -1,61 +1,90 @@
 package database
 
 import (
+	"context"
 	"embed"
 	"fmt"
 	"io/fs"
-	"sort"
-	"strings"
-	"time"
 
+	"github.com/pressly/goose/v3"
+	"github.com/pressly/goose/v3/lock"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
-type schemaMigration struct {
-	Version   string    `gorm:"primaryKey;type:varchar(180)"`
-	AppliedAt time.Time `gorm:"not null"`
+var requiredTables = []string{
+	"users", "temporary_users", "biometric_devices", "biometric_challenges",
+	"security_questions", "wallets", "wallet_deposits", "wallet_ledgers",
+	"spending_plans", "envelopes", "bank_accounts", "withdrawals",
+	"subscription_plans", "user_subscriptions", "monthly_usages",
+	"idempotent_keys", "entries", "paystack_events", "reconciliation_controls",
+	"reconciliation_findings", "reconciliation_operator_actions",
+	"operational_alerts", "operational_alert_deliveries",
+	"authentication_rate_limits",
 }
 
-func (schemaMigration) TableName() string { return "schema_migrations" }
-
-func RunVersionedMigrations(db *gorm.DB) error {
-	if err := db.AutoMigrate(&schemaMigration{}); err != nil {
-		return fmt.Errorf("create schema migration table: %w", err)
+func NewMigrationProvider(db *gorm.DB) (*goose.Provider, error) {
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("get SQL database: %w", err)
 	}
-	entries, err := fs.ReadDir(migrationFiles, "migrations")
+	migrations, err := fs.Sub(migrationFiles, "migrations")
+	if err != nil {
+		return nil, fmt.Errorf("open embedded migrations: %w", err)
+	}
+	locker, err := lock.NewPostgresSessionLocker(lock.WithLockTimeout(1, 60))
+	if err != nil {
+		return nil, fmt.Errorf("configure migration lock: %w", err)
+	}
+	provider, err := goose.NewProvider(
+		goose.DialectPostgres,
+		sqlDB,
+		migrations,
+		goose.WithSessionLocker(locker),
+		goose.WithTableName("goose_db_version"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("configure Goose: %w", err)
+	}
+	return provider, nil
+}
+
+func RunVersionedMigrations(ctx context.Context, db *gorm.DB) error {
+	provider, err := NewMigrationProvider(db)
 	if err != nil {
 		return err
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
-			continue
+	if _, err := provider.Up(ctx); err != nil {
+		return fmt.Errorf("apply Goose migrations: %w", err)
+	}
+	return VerifySchema(db)
+}
+
+func VerifySchema(db *gorm.DB) error {
+	for _, table := range requiredTables {
+		if !db.Migrator().HasTable(table) {
+			return fmt.Errorf("required table %s is missing; run the migration command", table)
 		}
-		version := entry.Name()
-		if err := db.Transaction(func(tx *gorm.DB) error {
-			var existing schemaMigration
-			err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&existing, "version = ?", version).Error
-			if err == nil {
-				return nil
-			}
-			if err != gorm.ErrRecordNotFound {
-				return err
-			}
-			sqlBytes, err := migrationFiles.ReadFile("migrations/" + version)
-			if err != nil {
-				return err
-			}
-			if err := tx.Exec(string(sqlBytes)).Error; err != nil {
-				return fmt.Errorf("apply migration %s: %w", version, err)
-			}
-			return tx.Create(&schemaMigration{Version: version, AppliedAt: time.Now()}).Error
-		}); err != nil {
-			return err
-		}
+	}
+	return nil
+}
+
+func VerifyMigrationState(ctx context.Context, db *gorm.DB) error {
+	if err := VerifySchema(db); err != nil {
+		return err
+	}
+	provider, err := NewMigrationProvider(db)
+	if err != nil {
+		return err
+	}
+	pending, err := provider.HasPending(ctx)
+	if err != nil {
+		return fmt.Errorf("check pending migrations: %w", err)
+	}
+	if pending {
+		return fmt.Errorf("database has pending migrations; run cmd/migrate up before starting the API")
 	}
 	return nil
 }

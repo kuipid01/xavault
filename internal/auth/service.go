@@ -2,7 +2,6 @@ package auth
 
 import (
 	"errors"
-	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -305,7 +304,6 @@ func (s *AuthService) Login(req LoginRequest) *response.APIResponse {
 			Error:   "invalid_credentials",
 		}
 	}
-	fmt.Println("USER FROM SERVICE", user)
 	accessToken, refreshToken, err := GenerateAllToken(user.ID, user.Email, s.tokenService)
 	if err != nil {
 		return &response.APIResponse{
@@ -454,8 +452,6 @@ func (s *AuthService) ResetPassword(req ResetPasswordRequest) *response.APIRespo
 	hashedToken := hashToken(rawOTP)
 
 	user, err := s.CheckTokenValidity(rawOTP)
-	fmt.Println(err)
-
 	if err != nil {
 		return &response.APIResponse{
 			Success: false,
@@ -1155,38 +1151,24 @@ func (s *AuthService) VerifyEmail(rawToken string) *response.APIResponse {
 }
 
 func (s *AuthService) CheckTokenValidity(rawToken string) (*users.User, error) {
-	fmt.Println("Checking token validity...")
-
 	hashedToken := hashToken(rawToken)
-	fmt.Println("Token hashed successfully:", hashedToken)
 
 	tokenRecord, err := s.repository.FindVerificationToken(hashedToken)
 	if err != nil {
-		fmt.Println("Error finding verification token:", err)
 		return nil, errors.New("Invalid verification token")
 	}
 
 	if tokenRecord == nil {
-		fmt.Println("No token record found for hashed token:", hashedToken)
 		return nil, errors.New("Invalid verification token")
 	}
-
-	fmt.Println("Token record found for user ID:", tokenRecord.ID)
 
 	if tokenRecord.VerificationTokenExpiresAt == nil {
-		fmt.Println("Verification token expiry time is nil")
 		return nil, errors.New("Invalid verification token")
 	}
 
-	fmt.Println("Token expires at:", *tokenRecord.VerificationTokenExpiresAt)
-	fmt.Println("Current time:", time.Now())
-
 	if time.Now().After(*tokenRecord.VerificationTokenExpiresAt) {
-		fmt.Println("Verification token has expired")
 		return nil, errors.New("Verification token has expired")
 	}
-
-	fmt.Println("Verification token is valid")
 
 	return tokenRecord, nil
 }

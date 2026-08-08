@@ -39,6 +39,8 @@ func RegisterRoutes(app *fiber.App, cfg *config.Config, container *Container) {
 	waitlist.RegisterRoutes(v1, container.Waitlist.Hnd)
 	subscription.RegisterSubscriptionRoutes(v1, container.SubscriptionHND)
 	reconciliation.RegisterRoutes(v1, container.ReconciliationHND)
+	webhookAdmin := v1.Group("/admin/webhooks", reconciliation.AdminOnly())
+	webhookAdmin.Post("/:id/replay", container.WebhookHND.ReplayStoredEvent)
 	v1.Get("/", func(c *fiber.Ctx) error {
 
 		return response.Success(c, fiber.StatusOK, "Salary Vault API V1", nil)

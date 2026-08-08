@@ -1,6 +1,8 @@
 package database
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"strings"
 
@@ -20,16 +22,22 @@ import (
 	"gorm.io/gorm"
 )
 
-func RunMigrations(db *gorm.DB, cfg *config.Config) {
-	if strings.EqualFold(cfg.AppEnv, "production") {
-		if err := RunVersionedMigrations(db); err != nil {
-			log.Fatalf("failed to run versioned database migrations: %v", err)
+func PrepareSchema(ctx context.Context, db *gorm.DB, cfg *config.Config) error {
+	if cfg.AutoMigrate {
+		if strings.EqualFold(cfg.AppEnv, "production") {
+			return fmt.Errorf("AUTO_MIGRATE cannot be enabled in production")
 		}
-		log.Println("versioned database migrations completed")
-		return
+		if err := autoMigrateDevelopmentSchema(db); err != nil {
+			return fmt.Errorf("development AutoMigrate failed: %w", err)
+		}
+		log.Println("development AutoMigrate completed")
+		return nil
 	}
-	// ClearDatabase(db)
-	err := db.AutoMigrate(
+	return VerifyMigrationState(ctx, db)
+}
+
+func autoMigrateDevelopmentSchema(db *gorm.DB) error {
+	return db.AutoMigrate(
 		&users.User{},
 		&users.SecurityQuestion{},
 		&auth.TemporaryUser{},
@@ -52,12 +60,6 @@ func RunMigrations(db *gorm.DB, cfg *config.Config) {
 		&reconciliation.Finding{},
 		&reconciliation.OperatorAction{},
 	)
-
-	if err != nil {
-		log.Fatalf("failed to run database migrations: %v", err)
-	}
-
-	log.Println("database migrations completed")
 }
 
 func ClearDatabase(db *gorm.DB) {

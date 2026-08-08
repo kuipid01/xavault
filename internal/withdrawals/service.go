@@ -558,57 +558,7 @@ func (s *WithdrawalService) CompleteProviderWithdrawal(reference string, provide
 	}
 
 	err := s.repo.WithTransaction(func(tx *gorm.DB) error {
-		withdrawal, err := s.repo.FindByReferenceForUpdate(tx, reference)
-		if err != nil {
-			return err
-		}
-
-		if withdrawal == nil {
-			return ErrWithdrawalNotFound
-		}
-
-		if withdrawal.Status == WithdrawalStatusPaid {
-			return nil
-		}
-
-		if withdrawal.Status == WithdrawalStatusFailed || withdrawal.Status == WithdrawalStatusCancelled || withdrawal.Status == WithdrawalStatusReversed {
-			return fmt.Errorf("withdrawal is already final with status %s", withdrawal.Status)
-		}
-
-		ledgerBefore, updatedWallet, err := s.walletRepo.CompleteWithdrawalTx(
-			tx,
-			withdrawal.UserID,
-			withdrawal.WalletID,
-			withdrawal.Amount,
-		)
-		if err != nil {
-			return err
-		}
-
-		if err := s.repo.MarkPaidWithTx(tx, withdrawal.ID, providerStatus); err != nil {
-			return err
-		}
-
-		ledger := &wallets.WalletLedger{
-			ID:       security.GenateUniqueID(),
-			UserID:   withdrawal.UserID,
-			WalletID: withdrawal.WalletID,
-			Currency: withdrawal.Currency,
-			// Keep the provider-facing withdrawal reference on the customer ledger.
-			// The ledger ID already uniquely identifies this internal accounting entry.
-			Reference:     withdrawal.Reference,
-			Source:        wallets.WalletLedgerSourceWithdrawal,
-			SourceID:      withdrawal.ID,
-			Type:          wallets.WalletLedgerTypeWithdrawalDebit,
-			Amount:        withdrawal.Amount,
-			BalanceBefore: ledgerBefore,
-			BalanceAfter:  updatedWallet.LedgerBalance,
-			Description:   "Withdrawal completed by Paystack",
-			CreatedAt:     time.Now(),
-		}
-
-		_, err = s.walletRepo.CreateWalletLedgerTx(tx, ledger)
-		return err
+		return s.CompleteProviderWithdrawalTx(tx, reference, providerStatus)
 	})
 
 	if err != nil {
@@ -619,6 +569,40 @@ func (s *WithdrawalService) CompleteProviderWithdrawal(reference string, provide
 		Success: true,
 		Message: "Withdrawal completed successfully",
 	}
+}
+
+func (s *WithdrawalService) CompleteProviderWithdrawalTx(tx *gorm.DB, reference, providerStatus string) error {
+	withdrawal, err := s.repo.FindByReferenceForUpdate(tx, strings.TrimSpace(reference))
+	if err != nil {
+		return err
+	}
+	if withdrawal == nil {
+		return ErrWithdrawalNotFound
+	}
+	if withdrawal.Status == WithdrawalStatusPaid {
+		return nil
+	}
+	if withdrawal.Status == WithdrawalStatusFailed || withdrawal.Status == WithdrawalStatusCancelled || withdrawal.Status == WithdrawalStatusReversed {
+		return fmt.Errorf("withdrawal is already final with status %s", withdrawal.Status)
+	}
+	ledgerBefore, updatedWallet, err := s.walletRepo.CompleteWithdrawalTx(
+		tx, withdrawal.UserID, withdrawal.WalletID, withdrawal.Amount,
+	)
+	if err != nil {
+		return err
+	}
+	if err := s.repo.MarkPaidWithTx(tx, withdrawal.ID, providerStatus); err != nil {
+		return err
+	}
+	_, err = s.walletRepo.CreateWalletLedgerTx(tx, &wallets.WalletLedger{
+		ID: security.GenateUniqueID(), UserID: withdrawal.UserID, WalletID: withdrawal.WalletID,
+		Currency: withdrawal.Currency, Reference: withdrawal.Reference,
+		Source: wallets.WalletLedgerSourceWithdrawal, SourceID: withdrawal.ID,
+		Type: wallets.WalletLedgerTypeWithdrawalDebit, Amount: withdrawal.Amount,
+		BalanceBefore: ledgerBefore, BalanceAfter: updatedWallet.LedgerBalance,
+		Description: "Withdrawal completed by Paystack", CreatedAt: time.Now(),
+	})
+	return err
 }
 
 func (s *WithdrawalService) FailProviderWithdrawal(reference string, providerStatus string, reason string) *response.APIResponse {
@@ -632,57 +616,7 @@ func (s *WithdrawalService) FailProviderWithdrawal(reference string, providerSta
 	}
 
 	err := s.repo.WithTransaction(func(tx *gorm.DB) error {
-		withdrawal, err := s.repo.FindByReferenceForUpdate(tx, reference)
-		if err != nil {
-			return err
-		}
-
-		if withdrawal == nil {
-			return ErrWithdrawalNotFound
-		}
-
-		if withdrawal.Status == WithdrawalStatusReversed ||
-			withdrawal.Status == WithdrawalStatusFailed ||
-			withdrawal.Status == WithdrawalStatusCancelled {
-			return nil
-		}
-
-		if withdrawal.Status == WithdrawalStatusPaid {
-			ledgerBefore, wallet, err := s.walletRepo.ReverseCompletedWithdrawalTx(
-				tx,
-				withdrawal.UserID,
-				withdrawal.WalletID,
-				withdrawal.Amount,
-			)
-			if err != nil {
-				return err
-			}
-			if err := s.repo.MarkReversedWithTx(tx, withdrawal.ID, providerStatus, reason); err != nil {
-				return err
-			}
-			_, err = s.walletRepo.CreateWalletLedgerTx(tx, &wallets.WalletLedger{
-				ID:            security.GenateUniqueID(),
-				UserID:        withdrawal.UserID,
-				WalletID:      withdrawal.WalletID,
-				Currency:      withdrawal.Currency,
-				Reference:     "WITHDRAWAL_REVERSED_" + withdrawal.ID,
-				Source:        wallets.WalletLedgerSourceWithdrawal,
-				SourceID:      withdrawal.ID,
-				Type:          wallets.WalletLedgerTypeRefund,
-				Amount:        withdrawal.Amount,
-				BalanceBefore: ledgerBefore,
-				BalanceAfter:  wallet.LedgerBalance,
-				Description:   "Paystack reversed withdrawal",
-				CreatedAt:     time.Now(),
-			})
-			return err
-		}
-
-		if reason == "" {
-			reason = "Paystack transfer " + providerStatus
-		}
-
-		return s.repo.MarkFailedWithTx(tx, withdrawal.ID, reason)
+		return s.FailProviderWithdrawalTx(tx, reference, providerStatus, reason)
 	})
 
 	if err != nil {
@@ -693,6 +627,45 @@ func (s *WithdrawalService) FailProviderWithdrawal(reference string, providerSta
 		Success: true,
 		Message: "Withdrawal marked failed successfully",
 	}
+}
+
+func (s *WithdrawalService) FailProviderWithdrawalTx(tx *gorm.DB, reference, providerStatus, reason string) error {
+	withdrawal, err := s.repo.FindByReferenceForUpdate(tx, strings.TrimSpace(reference))
+	if err != nil {
+		return err
+	}
+	if withdrawal == nil {
+		return ErrWithdrawalNotFound
+	}
+	if withdrawal.Status == WithdrawalStatusReversed ||
+		withdrawal.Status == WithdrawalStatusFailed ||
+		withdrawal.Status == WithdrawalStatusCancelled {
+		return nil
+	}
+	if withdrawal.Status == WithdrawalStatusPaid {
+		ledgerBefore, wallet, err := s.walletRepo.ReverseCompletedWithdrawalTx(
+			tx, withdrawal.UserID, withdrawal.WalletID, withdrawal.Amount,
+		)
+		if err != nil {
+			return err
+		}
+		if err := s.repo.MarkReversedWithTx(tx, withdrawal.ID, providerStatus, reason); err != nil {
+			return err
+		}
+		_, err = s.walletRepo.CreateWalletLedgerTx(tx, &wallets.WalletLedger{
+			ID: security.GenateUniqueID(), UserID: withdrawal.UserID, WalletID: withdrawal.WalletID,
+			Currency: withdrawal.Currency, Reference: "WITHDRAWAL_REVERSED_" + withdrawal.ID,
+			Source: wallets.WalletLedgerSourceWithdrawal, SourceID: withdrawal.ID,
+			Type: wallets.WalletLedgerTypeRefund, Amount: withdrawal.Amount,
+			BalanceBefore: ledgerBefore, BalanceAfter: wallet.LedgerBalance,
+			Description: "Paystack reversed withdrawal", CreatedAt: time.Now(),
+		})
+		return err
+	}
+	if reason == "" {
+		reason = "Paystack transfer " + providerStatus
+	}
+	return s.repo.MarkFailedWithTx(tx, withdrawal.ID, reason)
 }
 
 func (s *WithdrawalService) calculateWithdrawalPreview(

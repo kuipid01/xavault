@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Xavault database backup every 15 minutes
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+RandomizedDelaySec=30
+Unit=xavault-backup.service
+
+[Install]
+WantedBy=timers.target

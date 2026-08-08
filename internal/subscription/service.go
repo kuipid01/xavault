@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	paymentproviders "github.com/kuipid01/salary-vault/internal/platform/payment-providers"
+	"gorm.io/gorm"
 )
 
 type SubscriptionService struct {
@@ -118,6 +119,14 @@ func (s *SubscriptionService) CreateSubscription(
 // ActivateSubscription is called from the Paystack charge.success webhook.
 // It finds the existing pending subscription by the Paystack reference and activates it.
 func (s *SubscriptionService) ActivateSubscription(userIDStr, planIDStr, providerRef string, amount int64, currency string) error {
+	return s.activateSubscription(nil, userIDStr, planIDStr, providerRef, amount, currency)
+}
+
+func (s *SubscriptionService) ActivateSubscriptionTx(tx *gorm.DB, userIDStr, planIDStr, providerRef string, amount int64, currency string) error {
+	return s.activateSubscription(tx, userIDStr, planIDStr, providerRef, amount, currency)
+}
+
+func (s *SubscriptionService) activateSubscription(tx *gorm.DB, userIDStr, planIDStr, providerRef string, amount int64, currency string) error {
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
 		return errors.New("invalid subscription user metadata")
@@ -129,8 +138,14 @@ func (s *SubscriptionService) ActivateSubscription(userIDStr, planIDStr, provide
 	if amount <= 0 {
 		return errors.New("invalid subscription payment amount")
 	}
-	if err := s.subRepo.ActivateVerified(providerRef, userID, planID, amount, currency); err != nil {
-		return fmt.Errorf("activate subscription: %w", err)
+	var activateErr error
+	if tx == nil {
+		activateErr = s.subRepo.ActivateVerified(providerRef, userID, planID, amount, currency)
+	} else {
+		activateErr = s.subRepo.ActivateVerifiedTx(tx, providerRef, userID, planID, amount, currency)
+	}
+	if activateErr != nil {
+		return fmt.Errorf("activate subscription: %w", activateErr)
 	}
 	return nil
 }

@@ -16,7 +16,7 @@ func (f *fakePaymentProvider) InitiateDeposit(ctx context.Context, body *payment
 	return nil, nil
 }
 
-func (f *fakePaymentProvider) VerifyDeposit(ctx context.Context, reference string) (*paymentproviders.DepositResponse, error) {
+func (f *fakePaymentProvider) VerifyDeposit(ctx context.Context, reference string) (*paymentproviders.VerifyTransactionResponse, error) {
 	return nil, nil
 }
 
@@ -58,7 +58,7 @@ func (f *fakePaymentProvider) InitiateTransfer(ctx context.Context, body *paymen
 	return nil, nil
 }
 
-func (f *fakePaymentProvider) VerifyWithdrawal(ctx context.Context, reference string) (*paymentproviders.WithdrawalResponse, error) {
+func (f *fakePaymentProvider) VerifyWithdrawal(ctx context.Context, reference string) (*paymentproviders.VerifyTransferResponse, error) {
 	return nil, nil
 }
 
