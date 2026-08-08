@@ -19,6 +19,7 @@ func NewModule(db *gorm.DB, walletService *wallets.WalletService, brevoMailer *m
 	authRepo := NewAuthRepository(db)
 	tokenService := NewTokenService()
 	svc := NewAuthService(repo, authRepo, brevoMailer, tokenService, walletService)
+	svc.SetRegistrationDB(db)
 
 	hnd := NewAuthHandler(svc)
 	return &Module{Repo: repo, AuthRepo: authRepo, Svc: svc, Hnd: hnd}

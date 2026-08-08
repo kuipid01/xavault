@@ -52,9 +52,9 @@ func TestVersionedMigrationsBuildFreshDatabase(t *testing.T) {
 	if err := db.Table("goose_db_version").Where("is_applied = ?", true).Count(&applied).Error; err != nil {
 		t.Fatal(err)
 	}
-	if applied != 11 {
-		// Goose records its initial version zero in addition to our ten files.
-		t.Fatalf("got %d applied migration records, want 11", applied)
+	if applied != 13 {
+		// Goose records its initial version zero in addition to our twelve files.
+		t.Fatalf("got %d applied migration records, want 13", applied)
 	}
 }
 

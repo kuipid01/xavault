@@ -2,6 +2,7 @@ package auth
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -10,21 +11,27 @@ import (
 	"github.com/google/uuid"
 	"github.com/kuipid01/salary-vault/internal/platform/mail"
 	"github.com/kuipid01/salary-vault/internal/shared/response"
+	"github.com/kuipid01/salary-vault/internal/shared/security"
+	"github.com/kuipid01/salary-vault/internal/subscription"
 	"github.com/kuipid01/salary-vault/internal/users"
 	"github.com/kuipid01/salary-vault/internal/wallets"
+	"gorm.io/gorm"
 )
 
 type AuthService struct {
-	repository    *users.UserRepository
-	authRepo      *AuthRepository
-	mailer        mail.Mailer
-	tokenService  *TokenService
-	walletService *wallets.WalletService
+	repository     *users.UserRepository
+	authRepo       *AuthRepository
+	mailer         mail.Mailer
+	tokenService   *TokenService
+	walletService  *wallets.WalletService
+	registrationDB *gorm.DB
 }
 
 func NewAuthService(repository *users.UserRepository, authRepo *AuthRepository, mailer mail.Mailer, tokenService *TokenService, walletService *wallets.WalletService) *AuthService {
 	return &AuthService{repository: repository, authRepo: authRepo, mailer: mailer, tokenService: tokenService, walletService: walletService}
 }
+
+func (s *AuthService) SetRegistrationDB(db *gorm.DB) { s.registrationDB = db }
 
 func (s *AuthService) Register(req RegisterRequest) *response.APIResponse {
 	validData, validationErrors := validateRegistrationData(req)
@@ -116,7 +123,7 @@ func (s *AuthService) Register(req RegisterRequest) *response.APIResponse {
 		}
 		finalUser.Nickname = &nickname
 	}
-	_, err = s.repository.Create(&finalUser)
+	err = s.completeRegistration(&finalUser)
 	if err != nil {
 		return &response.APIResponse{
 			Success: false,
@@ -124,13 +131,48 @@ func (s *AuthService) Register(req RegisterRequest) *response.APIResponse {
 			Error:   err,
 		}
 	}
-	s.walletService.CreateWallet(finalUser.ID)
 	_ = s.authRepo.DeleteTemporaryUser(finalUser.Email)
 	return &response.APIResponse{
 		Success: true,
 		Message: "Registration successful",
 		Data:    validData.Email,
 	}
+}
+
+func (s *AuthService) completeRegistration(user *users.User) error {
+	if s.registrationDB == nil {
+		if _, err := s.repository.Create(user); err != nil {
+			return err
+		}
+		result := s.walletService.CreateWallet(user.ID)
+		if !result.Success {
+			return fmt.Errorf("create registration wallet: %v", result.Error)
+		}
+		return nil
+	}
+	return s.registrationDB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(user).Error; err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		wallet := wallets.Wallet{ID: security.GenateUniqueID(), UserID: user.ID, Currency: "NGN", CreatedAt: now, UpdatedAt: now}
+		if err := tx.Create(&wallet).Error; err != nil {
+			return fmt.Errorf("create wallet: %w", err)
+		}
+		var freePlan subscription.SubscriptionPlan
+		if err := tx.Where("code = ? AND deleted_at IS NULL", subscription.PlanFree).First(&freePlan).Error; err != nil {
+			return fmt.Errorf("load Free plan: %w", err)
+		}
+		userID, err := uuid.Parse(user.ID)
+		if err != nil {
+			return err
+		}
+		free := subscription.UserSubscription{BaseModel: subscription.BaseModel{ID: uuid.New()}, UserID: userID, PlanID: freePlan.ID, Status: subscription.SubActive, CurrentPeriodStart: now, CurrentPeriodEnd: now.AddDate(100, 0, 0), Provider: "xavault"}
+		if err := tx.Create(&free).Error; err != nil {
+			return fmt.Errorf("assign Free subscription: %w", err)
+		}
+		return nil
+	})
 }
 
 func (s *AuthService) StartRegistration(req StartRegistrationRequest) *response.APIResponse {
@@ -199,7 +241,7 @@ func (s *AuthService) StartRegistration(req StartRegistrationRequest) *response.
 	if err := s.authRepo.UpsertTemporaryUser(record); err != nil {
 		return &response.APIResponse{
 			Success: false,
-			Message: "Could not save verification OTP",
+			Message: "Could not send verification OTP",
 			Error:   err.Error(),
 		}
 	}

@@ -34,14 +34,12 @@ func (r *UserRepository) UpdateUserToken(email, token string, expiresAt time.Tim
 func (r *UserRepository) FindByEmail(email string) (*User, error) {
 	var user User
 
-	err := r.db.Where("email = ?", email).First(&user).Error
-
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-
-		return nil, err
+	result := r.db.Where("email = ?", email).Limit(1).Find(&user)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return nil, nil
 	}
 
 	return &user, nil

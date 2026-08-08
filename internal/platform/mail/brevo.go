@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"time"
@@ -114,7 +115,7 @@ func (b *BrevoMailer) SendMailVerification(email, otp string) error {
 		ExpiryMinutes int
 	}{
 		Name:          "",
-		AppName:       "Salary Vault",
+		AppName:       "XAVAUL",
 		OTP:           otp,
 		ExpiryMinutes: 30,
 	}
@@ -132,6 +133,9 @@ func (b *BrevoMailer) SendMailVerification(email, otp string) error {
 		htmlContent,
 		nil,
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	return err
 }

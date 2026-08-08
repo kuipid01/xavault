@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"errors"
 	"time"
 
 	"gorm.io/gorm"
@@ -31,12 +30,12 @@ func (r *AuthRepository) UpsertTemporaryUser(record *TemporaryUser) error {
 
 func (r *AuthRepository) FindTemporaryUserByEmail(email string) (*TemporaryUser, error) {
 	var record TemporaryUser
-	err := r.db.Where("email = ?", email).First(&record).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, err
+	result := r.db.Where("email = ?", email).Limit(1).Find(&record)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return nil, nil
 	}
 	return &record, nil
 }
