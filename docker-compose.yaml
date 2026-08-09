@@ -18,6 +18,8 @@ services:
       dockerfile: Dockerfile
     container_name: salary_vault_api
     restart: unless-stopped
+    env_file:
+    - .env
     environment:
       DB_HOST: postgres
       DB_USER: salary_vault
