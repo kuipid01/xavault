@@ -7,8 +7,6 @@ services:
       POSTGRES_USER: salary_vault
       POSTGRES_PASSWORD: salary_vault_password
       POSTGRES_DB: salary_vault
-    ports:
-      - "5432:5432"
     volumes:
       - salary_vault_pgdata:/var/lib/postgresql/data
 

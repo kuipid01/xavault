@@ -9,50 +9,52 @@ import (
 )
 
 type Config struct {
-	AppName            string
-	AppEnv             string
-	AppPort            string
-	DBHost             string
-	DBUser             string
-	DBPassword         string
-	DBName             string
-	DBPort             string
-	DBSSLMode          string
-	AutoMigrate        bool
-	CORSAllowedOrigins string
-	AdminAPIKey        string
-	JWTAccessSecret    string
-	JWTRefreshSecret   string
-	PaystackSecretKey  string
-	BrevoAPIKey        string
-	BrevoSenderName    string
-	BrevoSenderEmail   string
-	AlertEmailTo       string
+	AppName                       string
+	AppEnv                        string
+	AppPort                       string
+	DBHost                        string
+	DBUser                        string
+	DBPassword                    string
+	DBName                        string
+	DBPort                        string
+	DBSSLMode                     string
+	DBAllowInsecurePrivateNetwork bool
+	AutoMigrate                   bool
+	CORSAllowedOrigins            string
+	AdminAPIKey                   string
+	JWTAccessSecret               string
+	JWTRefreshSecret              string
+	PaystackSecretKey             string
+	BrevoAPIKey                   string
+	BrevoSenderName               string
+	BrevoSenderEmail              string
+	AlertEmailTo                  string
 }
 
 func Load() *Config {
 	_ = godotenv.Load()
 
 	return &Config{
-		AppName:            getEnv("APP_NAME", "Salary Vault API"),
-		AppEnv:             getEnv("APP_ENV", "development"),
-		AppPort:            getEnv("APP_PORT", "8080"),
-		DBHost:             getEnv("DB_HOST", "localhost"),
-		DBUser:             getEnv("DB_USER", "salary_vault"),
-		DBPassword:         getEnv("DB_PASSWORD", "salary_vault_password"),
-		DBName:             getEnv("DB_NAME", "salary_vault"),
-		DBPort:             getEnv("DB_PORT", "5432"),
-		DBSSLMode:          getEnv("DB_SSLMODE", "disable"),
-		AutoMigrate:        strings.EqualFold(getEnv("AUTO_MIGRATE", "false"), "true"),
-		CORSAllowedOrigins: getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000"),
-		AdminAPIKey:        os.Getenv("ADMIN_API_KEY"),
-		JWTAccessSecret:    os.Getenv("JWT_ACCESS_SECRET"),
-		JWTRefreshSecret:   os.Getenv("JWT_REFRESH_SECRET"),
-		PaystackSecretKey:  os.Getenv("PAYSTACK_SECRET_KEY"),
-		BrevoAPIKey:        os.Getenv("BREVO_API_KEY"),
-		BrevoSenderName:    os.Getenv("BREVO_SENDER_NAME"),
-		BrevoSenderEmail:   os.Getenv("BREVO_SENDER_EMAIL"),
-		AlertEmailTo:       os.Getenv("ALERT_EMAIL_TO"),
+		AppName:                       getEnv("APP_NAME", "Salary Vault API"),
+		AppEnv:                        getEnv("APP_ENV", "development"),
+		AppPort:                       getEnv("APP_PORT", "8080"),
+		DBHost:                        getEnv("DB_HOST", "localhost"),
+		DBUser:                        getEnv("DB_USER", "salary_vault"),
+		DBPassword:                    getEnv("DB_PASSWORD", "salary_vault_password"),
+		DBName:                        getEnv("DB_NAME", "salary_vault"),
+		DBPort:                        getEnv("DB_PORT", "5432"),
+		DBSSLMode:                     getEnv("DB_SSLMODE", "disable"),
+		DBAllowInsecurePrivateNetwork: strings.EqualFold(getEnv("DB_ALLOW_INSECURE_PRIVATE_NETWORK", "false"), "true"),
+		AutoMigrate:                   strings.EqualFold(getEnv("AUTO_MIGRATE", "false"), "true"),
+		CORSAllowedOrigins:            getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000"),
+		AdminAPIKey:                   os.Getenv("ADMIN_API_KEY"),
+		JWTAccessSecret:               os.Getenv("JWT_ACCESS_SECRET"),
+		JWTRefreshSecret:              os.Getenv("JWT_REFRESH_SECRET"),
+		PaystackSecretKey:             os.Getenv("PAYSTACK_SECRET_KEY"),
+		BrevoAPIKey:                   os.Getenv("BREVO_API_KEY"),
+		BrevoSenderName:               os.Getenv("BREVO_SENDER_NAME"),
+		BrevoSenderEmail:              os.Getenv("BREVO_SENDER_EMAIL"),
+		AlertEmailTo:                  os.Getenv("ALERT_EMAIL_TO"),
 	}
 }
 
@@ -88,6 +90,10 @@ func (c *Config) Validate() error {
 	}
 	switch strings.ToLower(strings.TrimSpace(c.DBSSLMode)) {
 	case "require", "verify-ca", "verify-full":
+	case "disable":
+		if !c.DBAllowInsecurePrivateNetwork || !strings.EqualFold(strings.TrimSpace(c.DBHost), "postgres") {
+			return fmt.Errorf("DB_SSLMODE=disable in production requires DB_ALLOW_INSECURE_PRIVATE_NETWORK=true and DB_HOST=postgres")
+		}
 	default:
 		return fmt.Errorf("DB_SSLMODE must require TLS in production")
 	}
