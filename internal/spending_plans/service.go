@@ -67,6 +67,18 @@ func (s *PlanService) CreateDraftPlan(userID string, req CreatePlanRequest) *res
 		}
 	}
 
+	// Keep drafts immediately fundable. Confirmation repeats this check while
+	// locking the wallet row, which remains the authority under concurrency.
+	if req.Amount > wallet.AvailableBalance {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Plan amount exceeds available wallet balance",
+			Error: map[string]string{
+				"amount": "Plan amount cannot exceed available wallet balance",
+			},
+		}
+	}
+
 	startDate, err := ParseDate(req.StartDate)
 	if err != nil {
 		return &response.APIResponse{
@@ -541,6 +553,14 @@ func (s *PlanService) ConfirmPlan(userID string, planID string, req ConfirmPlanR
 
 		userUUID, err := uuid.Parse(userID)
 		if err != nil {
+			return err
+		}
+
+		currentPlanCount, err := s.repository.CountOpenByUserIDTx(tx, userID)
+		if err != nil {
+			return err
+		}
+		if err := s.subRepo.CanPublishPlan(userUUID, currentPlanCount); err != nil {
 			return err
 		}
 

@@ -22,7 +22,7 @@ var requiredTables = []string{
 	"idempotent_keys", "entries", "paystack_events", "reconciliation_controls",
 	"reconciliation_findings", "reconciliation_operator_actions",
 	"operational_alerts", "operational_alert_deliveries",
-	"authentication_rate_limits",
+	"authentication_rate_limits", "provider_fee_rules", "fee_quotes",
 }
 
 func NewMigrationProvider(db *gorm.DB) (*goose.Provider, error) {

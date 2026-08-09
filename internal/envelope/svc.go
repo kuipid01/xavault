@@ -536,16 +536,6 @@ func (s *EnvelopeService) DeleteEnvelope(userID string, planID string, envelopeI
 			return ErrEnvelopeNotFound
 		}
 
-		// Locked envelopes cannot be deleted.
-		if envelope.UnboxedBalancePolicy == EnvelopeUnboxedPolicyLockedUntilParentEnds {
-			return ErrEnvelopeLockedCannotDelete
-		}
-
-		// Only flexible envelopes can be deleted.
-		if envelope.UnboxedBalancePolicy != EnvelopeUnboxedPolicyFlexible {
-			return ErrEnvelopeCannotDelete
-		}
-
 		childCount, err := s.repo.CountChildrenTx(tx, envelope.ID)
 		if err != nil {
 			return err
@@ -555,18 +545,14 @@ func (s *EnvelopeService) DeleteEnvelope(userID string, planID string, envelopeI
 			return ErrEnvelopeHasChildren
 		}
 
-		releasedAmount = envelope.Amount
-		withdrawalTotals, err := s.fundsRepo.EnvelopeTotals(tx, envelope.ID, userID)
+		hasWithdrawalHistory, err := s.fundsRepo.EnvelopeHasWithdrawalHistory(tx, envelope.ID, userID)
 		if err != nil {
 			return err
 		}
-		if withdrawalTotals.Pending > 0 {
-			return ErrEnvelopeWithdrawalInProgress
+		if hasWithdrawalHistory {
+			return ErrEnvelopeHasTransactions
 		}
-		releasedAmount = envelope.Amount - withdrawalTotals.Paid
-		if releasedAmount < 0 {
-			releasedAmount = 0
-		}
+		releasedAmount = envelope.Amount
 
 		if envelope.ParentEnvelopeID == nil {
 			releasedTo = "plan"
@@ -576,17 +562,8 @@ func (s *EnvelopeService) DeleteEnvelope(userID string, planID string, envelopeI
 			releasedToID = envelope.ParentEnvelopeID
 		}
 
-		if withdrawalTotals.Paid == 0 {
-			if err = s.repo.DeleteWithTx(tx, envelope); err != nil {
-				return err
-			}
-		} else {
-			// Keep the spent portion allocated so deleting an envelope cannot recreate money.
-			envelope.Amount = withdrawalTotals.Paid
-			envelope.Status = EnvelopeStatusCancelled
-			if err = s.repo.UpdateWithTx(tx, envelope); err != nil {
-				return err
-			}
+		if err = s.repo.DeleteWithTx(tx, envelope); err != nil {
+			return err
 		}
 
 		deletedEnvelope = envelope
@@ -765,6 +742,9 @@ func envelopeErrorResponse(message string, err error) *response.APIResponse {
 
 	if err == ErrEnvelopeWithdrawalInProgress {
 		return &response.APIResponse{Success: false, Message: "Wait for the envelope withdrawal to finish before deleting it", Error: err}
+	}
+	if err == ErrEnvelopeHasTransactions {
+		return &response.APIResponse{Success: false, Message: "An envelope with transaction history cannot be deleted", Error: err}
 	}
 
 	return &response.APIResponse{

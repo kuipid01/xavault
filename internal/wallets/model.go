@@ -33,12 +33,17 @@ type WalletDeposit struct {
 	//  FIX: Change type:uuid to type:varchar(100) to allow custom "DEP-..." prefixes
 	Reference string `gorm:"type:varchar(100);not null;uniqueIndex" json:"reference"`
 
-	Amount    int64     `gorm:"not null;default:0" json:"amount"`
-	Currency  string    `gorm:"not null;default:'NGN'" json:"currency"`
-	Status    string    `gorm:"not null;default:'pending'" json:"status"`
-	Provider  string    `gorm:"not null;default:'paystack'" json:"provider"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Amount             int64     `gorm:"not null;default:0" json:"amount"`
+	Currency           string    `gorm:"not null;default:'NGN'" json:"currency"`
+	Status             string    `gorm:"not null;default:'pending'" json:"status"`
+	Provider           string    `gorm:"not null;default:'paystack'" json:"provider"`
+	QuoteID            *string   `gorm:"type:uuid" json:"quote_id,omitempty"`
+	GrossAmount        int64     `json:"gross_amount"`
+	WalletCreditAmount int64     `json:"wallet_credit_amount"`
+	ProviderFee        int64     `json:"provider_fee"`
+	PricingVersion     string    `json:"pricing_version"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 type WalletLedger struct {

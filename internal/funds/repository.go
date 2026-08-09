@@ -32,8 +32,8 @@ func (r *Repository) totals(tx *gorm.DB, query string, args ...interface{}) (Wit
 	var totals WithdrawalTotals
 	err := r.dbOrTx(tx).Table("withdrawals").
 		Select(`
-			COALESCE(SUM(CASE WHEN status IN ('paid', 'success') THEN amount ELSE 0 END), 0) AS paid,
-			COALESCE(SUM(CASE WHEN status IN ('pending', 'processing') THEN amount ELSE 0 END), 0) AS pending
+			COALESCE(SUM(CASE WHEN status IN ('paid', 'success') THEN COALESCE(total_deduction, amount) ELSE 0 END), 0) AS paid,
+			COALESCE(SUM(CASE WHEN status IN ('pending', 'processing') THEN COALESCE(total_deduction, amount) ELSE 0 END), 0) AS pending
 		`).
 		Where("deleted_at IS NULL").
 		Where(query, args...).
@@ -49,6 +49,14 @@ func (r *Repository) EnvelopeTotals(tx *gorm.DB, envelopeID, userID string) (Wit
 	return r.totals(tx, "envelope_id = ? AND user_id = ? AND source_type = ?", envelopeID, userID, "envelope")
 }
 
+func (r *Repository) EnvelopeHasWithdrawalHistory(tx *gorm.DB, envelopeID, userID string) (bool, error) {
+	var count int64
+	err := r.dbOrTx(tx).Table("withdrawals").
+		Where("envelope_id = ? AND user_id = ? AND source_type = ? AND deleted_at IS NULL", envelopeID, userID, "envelope").
+		Count(&count).Error
+	return count > 0, err
+}
+
 func (r *Repository) PlanTotals(tx *gorm.DB, planID, userID string) (WithdrawalTotals, error) {
 	return r.totals(tx, "plan_id = ? AND user_id = ?", planID, userID)
 }
@@ -62,8 +70,8 @@ func (r *Repository) EnvelopeTotalsByPlan(planID, userID string) (map[string]Wit
 	var rows []row
 	err := r.db.Table("withdrawals").
 		Select(`envelope_id,
-			COALESCE(SUM(CASE WHEN status IN ('paid', 'success') THEN amount ELSE 0 END), 0) AS paid,
-			COALESCE(SUM(CASE WHEN status IN ('pending', 'processing') THEN amount ELSE 0 END), 0) AS pending`).
+			COALESCE(SUM(CASE WHEN status IN ('paid', 'success') THEN COALESCE(total_deduction, amount) ELSE 0 END), 0) AS paid,
+			COALESCE(SUM(CASE WHEN status IN ('pending', 'processing') THEN COALESCE(total_deduction, amount) ELSE 0 END), 0) AS pending`).
 		Where("plan_id = ? AND user_id = ? AND source_type = ? AND envelope_id IS NOT NULL AND deleted_at IS NULL", planID, userID, "envelope").
 		Group("envelope_id").Scan(&rows).Error
 	result := make(map[string]WithdrawalTotals, len(rows))

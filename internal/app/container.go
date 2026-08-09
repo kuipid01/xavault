@@ -12,6 +12,7 @@ import (
 	"github.com/kuipid01/salary-vault/internal/funds"
 	"github.com/kuipid01/salary-vault/internal/platform/mail"
 	paymentproviders "github.com/kuipid01/salary-vault/internal/platform/payment-providers"
+	"github.com/kuipid01/salary-vault/internal/pricing"
 	"github.com/kuipid01/salary-vault/internal/reconciliation"
 	clientNetwork "github.com/kuipid01/salary-vault/internal/shared/client"
 	client "github.com/kuipid01/salary-vault/internal/shared/client/idempotence"
@@ -73,7 +74,8 @@ func NewContainer(db *gorm.DB, cfg *config.Config) *Container {
 
 	// --- Subscription ---
 	subRepo := subscription.NewSubscriptionRepository(db)
-	walletModule := wallets.NewWalletModule(db, idempotencyManager, reusableClient, subRepo)
+	pricingService := pricing.NewService(db)
+	walletModule := wallets.NewWalletModule(db, idempotencyManager, reusableClient, subRepo, pricingService)
 	paystackProvider := paymentproviders.NewPaystackProvider(reusableClient)
 	subService := subscription.NewSubscriptionService(subRepo, paystackProvider)
 	subHandler := subscription.NewSubscriptionHandler(subService, &userReaderAdapter{repo: userRepo})
@@ -95,6 +97,7 @@ func NewContainer(db *gorm.DB, cfg *config.Config) *Container {
 	withdrawaModule := withdrawals.NewWithdrawalModule(
 		db, idempotencyManager, planRepo, envelopeRepo,
 		walletModule.Repo, bankAccountsModule.Repo, userRepo, reusableClient, fundsRepo,
+		pricingService, subRepo,
 	)
 	mailer := mail.NewBrevoMailer()
 	var alertDestinations []alerts.Destination

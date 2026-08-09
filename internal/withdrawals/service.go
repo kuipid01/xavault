@@ -2,6 +2,7 @@ package withdrawals
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -9,15 +10,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	bankaccounts "github.com/kuipid01/salary-vault/internal/bank_accounts"
 	"github.com/kuipid01/salary-vault/internal/envelope"
 	"github.com/kuipid01/salary-vault/internal/funds"
 	paymentproviders "github.com/kuipid01/salary-vault/internal/platform/payment-providers"
+	"github.com/kuipid01/salary-vault/internal/pricing"
 	httpclient "github.com/kuipid01/salary-vault/internal/shared/client"
 	client "github.com/kuipid01/salary-vault/internal/shared/client/idempotence"
 	"github.com/kuipid01/salary-vault/internal/shared/response"
 	"github.com/kuipid01/salary-vault/internal/shared/security"
 	spendingplans "github.com/kuipid01/salary-vault/internal/spending_plans"
+	"github.com/kuipid01/salary-vault/internal/subscription"
 	"github.com/kuipid01/salary-vault/internal/users"
 	"github.com/kuipid01/salary-vault/internal/wallets"
 	"gorm.io/gorm"
@@ -33,6 +37,8 @@ type WithdrawalService struct {
 	payment            paymentproviders.PaymentProvider
 	idempotencyManager *client.IdempotentRequest
 	fundsRepo          *funds.Repository
+	pricing            *pricing.Service
+	subRepo            *subscription.SubscriptionRepository
 }
 
 func NewWithdrawalService(
@@ -45,7 +51,18 @@ func NewWithdrawalService(
 	payment paymentproviders.PaymentProvider,
 	idempotencyManager *client.IdempotentRequest,
 	fundsRepo *funds.Repository,
+	extras ...interface{},
 ) *WithdrawalService {
+	pricingService := pricing.NewService(repo.db)
+	subscriptionRepo := subscription.NewSubscriptionRepository(repo.db)
+	for _, extra := range extras {
+		switch value := extra.(type) {
+		case *pricing.Service:
+			pricingService = value
+		case *subscription.SubscriptionRepository:
+			subscriptionRepo = value
+		}
+	}
 	return &WithdrawalService{
 		repo:               repo,
 		planRepo:           planRepo,
@@ -56,6 +73,8 @@ func NewWithdrawalService(
 		payment:            payment,
 		idempotencyManager: idempotencyManager,
 		fundsRepo:          fundsRepo,
+		pricing:            pricingService,
+		subRepo:            subscriptionRepo,
 	}
 }
 
@@ -112,6 +131,37 @@ func (s *WithdrawalService) PreviewWithdrawal(
 	if err != nil {
 		return withdrawalErrorResponse("Could not preview withdrawal", err)
 	}
+	userUUID, err := uuid.Parse(userID)
+	if err != nil {
+		return withdrawalErrorResponse("Could not quote withdrawal", err)
+	}
+	allowance, err := s.subRepo.HasFreeWithdrawal(userUUID)
+	if err != nil {
+		return withdrawalErrorResponse("Could not quote withdrawal", err)
+	}
+	contextBytes, _ := json.Marshal(map[string]interface{}{"plan_id": planID, "source_type": req.SourceType, "envelope_id": req.EnvelopeID})
+	quote, err := s.pricing.CreateWithdrawalQuote(userID, req.Amount, allowance, string(contextBytes))
+	if err != nil {
+		return withdrawalErrorResponse("Could not quote withdrawal", err)
+	}
+	preview.QuoteID = quote.ID
+	preview.ProviderTransferFee = quote.ProviderFee
+	preview.GovernmentLevy = quote.GovernmentLevy
+	preview.XavaultSubsidy = quote.XavaultSubsidy
+	preview.UserFee = quote.UserFee
+	preview.TotalDeduction = quote.TotalDeduction
+	preview.RecipientAmount = quote.RecipientAmount
+	preview.AllowanceApplied = quote.AllowanceApplied
+	preview.PricingVersion = quote.PricingVersion
+	preview.ExpiresAt = quote.ExpiresAt.Format(time.RFC3339)
+	if quote.TotalDeduction > preview.WithdrawableBalance {
+		preview.CanWithdraw = false
+		preview.ValidationErrors = append(preview.ValidationErrors, "Insufficient balance for withdrawal and provider charges")
+	}
+	preview.RemainingBalance = preview.WithdrawableBalance - quote.TotalDeduction
+	if preview.RemainingBalance < 0 {
+		preview.RemainingBalance = 0
+	}
 
 	return &response.APIResponse{
 		Success: true,
@@ -130,6 +180,7 @@ func (s *WithdrawalService) RequestWithdrawal(
 ) *response.APIResponse {
 	planID = strings.TrimSpace(planID)
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	req.QuoteID = strings.TrimSpace(req.QuoteID)
 
 	if planID == "" {
 		return &response.APIResponse{
@@ -137,6 +188,9 @@ func (s *WithdrawalService) RequestWithdrawal(
 			Message: "Plan ID is required",
 			Error:   "plan_id_required",
 		}
+	}
+	if req.QuoteID == "" {
+		return &response.APIResponse{Success: false, Message: "Withdrawal quote is required", Error: "quote_id_required"}
 	}
 
 	if idempotencyKey == "" {
@@ -191,6 +245,7 @@ func (s *WithdrawalService) RequestWithdrawal(
 			var createdWithdrawal *Withdrawal
 			var updatedWallet *wallets.Wallet
 			var planCurrency string
+			var feeQuote *pricing.Quote
 
 			now := time.Now()
 
@@ -221,6 +276,35 @@ func (s *WithdrawalService) RequestWithdrawal(
 				}
 
 				planCurrency = plan.Currency
+				feeQuote, err = s.pricing.ConsumeTx(tx, req.QuoteID, userID, pricing.OperationWithdrawal)
+				if err != nil {
+					return err
+				}
+				if feeQuote.PrincipalAmount != req.Amount {
+					return pricing.ErrQuoteInvalid
+				}
+				var quoteContext struct {
+					PlanID     string  `json:"plan_id"`
+					SourceType string  `json:"source_type"`
+					EnvelopeID *string `json:"envelope_id"`
+				}
+				if err := json.Unmarshal([]byte(feeQuote.ContextJSON), &quoteContext); err != nil ||
+					quoteContext.PlanID != planID ||
+					quoteContext.SourceType != req.SourceType ||
+					!sameOptionalString(quoteContext.EnvelopeID, req.EnvelopeID) {
+					return pricing.ErrQuoteInvalid
+				}
+				allowancePeriod := ""
+				if feeQuote.AllowanceApplied {
+					reserved, period, reserveErr := s.subRepo.ReserveFreeWithdrawalTx(tx, uuid.MustParse(userID))
+					if reserveErr != nil {
+						return reserveErr
+					}
+					if !reserved {
+						return pricing.ErrQuoteInvalid
+					}
+					allowancePeriod = period
+				}
 
 				err = s.ensureNoBlockingOpenWithdrawalTx(
 					tx,
@@ -234,7 +318,7 @@ func (s *WithdrawalService) RequestWithdrawal(
 				}
 
 				// Calculate after stale pending requests are cleared so reservations are current.
-				preview, err := s.calculateWithdrawalPreviewTx(tx, userID, planID, req.SourceType, req.EnvelopeID, req.Amount)
+				preview, err := s.calculateWithdrawalPreviewTx(tx, userID, planID, req.SourceType, req.EnvelopeID, feeQuote.TotalDeduction)
 				if err != nil {
 					return err
 				}
@@ -249,7 +333,7 @@ func (s *WithdrawalService) RequestWithdrawal(
 					tx,
 					userID,
 					plan.WalletID,
-					req.Amount,
+					feeQuote.TotalDeduction,
 				)
 				if err != nil {
 					return err
@@ -279,6 +363,19 @@ func (s *WithdrawalService) RequestWithdrawal(
 					IdempotencyKey:      idempotencyKey,
 					RequestedAt:         &now,
 					TransferInitiatedAt: nil,
+					QuoteID:             &feeQuote.ID,
+					ProviderTransferFee: feeQuote.ProviderFee,
+					GovernmentLevy:      feeQuote.GovernmentLevy,
+					XavaultSubsidy:      feeQuote.XavaultSubsidy,
+					UserFee:             feeQuote.UserFee,
+					TotalDeduction:      feeQuote.TotalDeduction,
+					RecipientAmount:     feeQuote.RecipientAmount,
+					AllowanceApplied:    feeQuote.AllowanceApplied,
+					AllowanceState:      map[bool]string{true: "reserved", false: "none"}[feeQuote.AllowanceApplied],
+					PricingVersion:      feeQuote.PricingVersion,
+				}
+				if feeQuote.AllowanceApplied {
+					withdrawal.AllowancePeriod = allowancePeriod
 				}
 
 				if err := s.repo.CreateWithTx(tx, withdrawal); err != nil {
@@ -300,7 +397,7 @@ func (s *WithdrawalService) RequestWithdrawal(
 			// 3. Initiation does not mean success.
 			// 4. Save Paystack transfer_code/reference/status.
 			// 5. Webhook will later mark withdrawal as success or failed.
-			amountForPaystack := req.Amount
+			amountForPaystack := feeQuote.RecipientAmount
 
 			transferReason := req.Reason
 			if transferReason == "" {
@@ -395,6 +492,18 @@ func (s *WithdrawalService) markFailedWithdrawalInitiation(
 	reason string,
 ) error {
 	return s.repo.WithTransaction(func(tx *gorm.DB) error {
+		var withdrawal Withdrawal
+		if err := tx.Where("id=?", withdrawalID).First(&withdrawal).Error; err != nil {
+			return err
+		}
+		if withdrawal.AllowanceApplied && withdrawal.AllowanceState == "reserved" {
+			if err := s.subRepo.ReleaseFreeWithdrawalTx(tx, uuid.MustParse(withdrawal.UserID), withdrawal.AllowancePeriod, false); err != nil {
+				return err
+			}
+			if err := tx.Model(&withdrawal).Update("allowance_state", "released").Error; err != nil {
+				return err
+			}
+		}
 		return s.repo.MarkFailedWithTx(tx, withdrawalID, reason)
 	})
 }
@@ -585,8 +694,12 @@ func (s *WithdrawalService) CompleteProviderWithdrawalTx(tx *gorm.DB, reference,
 	if withdrawal.Status == WithdrawalStatusFailed || withdrawal.Status == WithdrawalStatusCancelled || withdrawal.Status == WithdrawalStatusReversed {
 		return fmt.Errorf("withdrawal is already final with status %s", withdrawal.Status)
 	}
+	totalDeduction := withdrawal.TotalDeduction
+	if totalDeduction <= 0 {
+		totalDeduction = withdrawal.Amount
+	}
 	ledgerBefore, updatedWallet, err := s.walletRepo.CompleteWithdrawalTx(
-		tx, withdrawal.UserID, withdrawal.WalletID, withdrawal.Amount,
+		tx, withdrawal.UserID, withdrawal.WalletID, totalDeduction,
 	)
 	if err != nil {
 		return err
@@ -594,11 +707,19 @@ func (s *WithdrawalService) CompleteProviderWithdrawalTx(tx *gorm.DB, reference,
 	if err := s.repo.MarkPaidWithTx(tx, withdrawal.ID, providerStatus); err != nil {
 		return err
 	}
+	if withdrawal.AllowanceApplied && withdrawal.AllowanceState == "reserved" {
+		if err := s.subRepo.FinalizeFreeWithdrawalTx(tx, uuid.MustParse(withdrawal.UserID), withdrawal.AllowancePeriod); err != nil {
+			return err
+		}
+		if err := tx.Model(withdrawal).Update("allowance_state", "used").Error; err != nil {
+			return err
+		}
+	}
 	_, err = s.walletRepo.CreateWalletLedgerTx(tx, &wallets.WalletLedger{
 		ID: security.GenateUniqueID(), UserID: withdrawal.UserID, WalletID: withdrawal.WalletID,
 		Currency: withdrawal.Currency, Reference: withdrawal.Reference,
 		Source: wallets.WalletLedgerSourceWithdrawal, SourceID: withdrawal.ID,
-		Type: wallets.WalletLedgerTypeWithdrawalDebit, Amount: withdrawal.Amount,
+		Type: wallets.WalletLedgerTypeWithdrawalDebit, Amount: totalDeduction,
 		BalanceBefore: ledgerBefore, BalanceAfter: updatedWallet.LedgerBalance,
 		Description: "Withdrawal completed by Paystack", CreatedAt: time.Now(),
 	})
@@ -643,8 +764,12 @@ func (s *WithdrawalService) FailProviderWithdrawalTx(tx *gorm.DB, reference, pro
 		return nil
 	}
 	if withdrawal.Status == WithdrawalStatusPaid {
+		totalDeduction := withdrawal.TotalDeduction
+		if totalDeduction <= 0 {
+			totalDeduction = withdrawal.Amount
+		}
 		ledgerBefore, wallet, err := s.walletRepo.ReverseCompletedWithdrawalTx(
-			tx, withdrawal.UserID, withdrawal.WalletID, withdrawal.Amount,
+			tx, withdrawal.UserID, withdrawal.WalletID, totalDeduction,
 		)
 		if err != nil {
 			return err
@@ -652,11 +777,19 @@ func (s *WithdrawalService) FailProviderWithdrawalTx(tx *gorm.DB, reference, pro
 		if err := s.repo.MarkReversedWithTx(tx, withdrawal.ID, providerStatus, reason); err != nil {
 			return err
 		}
+		if withdrawal.AllowanceApplied && withdrawal.AllowanceState == "used" {
+			if err := s.subRepo.ReleaseFreeWithdrawalTx(tx, uuid.MustParse(withdrawal.UserID), withdrawal.AllowancePeriod, true); err != nil {
+				return err
+			}
+			if err := tx.Model(withdrawal).Update("allowance_state", "restored").Error; err != nil {
+				return err
+			}
+		}
 		_, err = s.walletRepo.CreateWalletLedgerTx(tx, &wallets.WalletLedger{
 			ID: security.GenateUniqueID(), UserID: withdrawal.UserID, WalletID: withdrawal.WalletID,
 			Currency: withdrawal.Currency, Reference: "WITHDRAWAL_REVERSED_" + withdrawal.ID,
 			Source: wallets.WalletLedgerSourceWithdrawal, SourceID: withdrawal.ID,
-			Type: wallets.WalletLedgerTypeRefund, Amount: withdrawal.Amount,
+			Type: wallets.WalletLedgerTypeRefund, Amount: totalDeduction,
 			BalanceBefore: ledgerBefore, BalanceAfter: wallet.LedgerBalance,
 			Description: "Paystack reversed withdrawal", CreatedAt: time.Now(),
 		})
@@ -664,6 +797,14 @@ func (s *WithdrawalService) FailProviderWithdrawalTx(tx *gorm.DB, reference, pro
 	}
 	if reason == "" {
 		reason = "Paystack transfer " + providerStatus
+	}
+	if withdrawal.AllowanceApplied && withdrawal.AllowanceState == "reserved" {
+		if err := s.subRepo.ReleaseFreeWithdrawalTx(tx, uuid.MustParse(withdrawal.UserID), withdrawal.AllowancePeriod, false); err != nil {
+			return err
+		}
+		if err := tx.Model(withdrawal).Update("allowance_state", "released").Error; err != nil {
+			return err
+		}
 	}
 	return s.repo.MarkFailedWithTx(tx, withdrawal.ID, reason)
 }
@@ -1137,6 +1278,18 @@ func normalizeOptionalString(value *string) *string {
 	}
 
 	return &trimmed
+}
+
+func sameOptionalString(left, right *string) bool {
+	leftValue := ""
+	rightValue := ""
+	if left != nil {
+		leftValue = strings.TrimSpace(*left)
+	}
+	if right != nil {
+		rightValue = strings.TrimSpace(*right)
+	}
+	return leftValue == rightValue
 }
 
 func buildWithdrawalDescription(sourceType string, envelopeID *string) string {

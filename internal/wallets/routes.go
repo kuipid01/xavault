@@ -13,6 +13,7 @@ func RegisterWalletRoutes(v1 fiber.Router, h *WalletHandler) {
 	wallet.Get("/", h.GetMyWallet)
 	wallet.Post("/dedicated-account", h.EnsureDedicatedAccount)
 	wallet.Post("/deposit/initiate", h.InitiateDeposit)
+	wallet.Post("/deposit/quote", h.QuoteDeposit)
 	wallet.Get("/deposits", h.GetAllDeposits)
 	wallet.Get("/deposit/:reference", h.GetDepositByReference)
 	wallet.Post("/deposit/:reference/dismiss", h.DismissDeposit)

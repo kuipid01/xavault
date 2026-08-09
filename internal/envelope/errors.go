@@ -14,4 +14,5 @@ var (
 	ErrEnvelopeCannotDelete           = errors.New("envelope cannot be deleted")
 	ErrEnvelopeLockedCannotDelete     = errors.New("locked envelope cannot be deleted")
 	ErrEnvelopeWithdrawalInProgress   = errors.New("envelope has a withdrawal in progress")
+	ErrEnvelopeHasTransactions        = errors.New("envelope has transaction history")
 )

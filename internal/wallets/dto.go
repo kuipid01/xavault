@@ -2,7 +2,12 @@ package wallets
 
 type InitiateDepositRequest struct {
 	Amount         int64  `json:"amount" validate:"required,gt=0"`
+	QuoteID        string `json:"quote_id"`
 	IdempotencyKey string `json:"idempotency_key" validate:"required"`
+}
+
+type DepositQuoteRequest struct {
+	Amount int64 `json:"amount"`
 }
 
 type InitiateDepositResponse struct {

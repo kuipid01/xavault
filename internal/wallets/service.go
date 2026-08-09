@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	paymentproviders "github.com/kuipid01/salary-vault/internal/platform/payment-providers"
+	"github.com/kuipid01/salary-vault/internal/pricing"
 
 	client "github.com/kuipid01/salary-vault/internal/shared/client/idempotence"
 	"github.com/kuipid01/salary-vault/internal/shared/response"
@@ -27,6 +28,7 @@ type WalletService struct {
 	payment            paymentproviders.PaymentProvider
 	idempotencyManager *client.IdempotentRequest
 	subRepo            *subscription.SubscriptionRepository
+	pricing            *pricing.Service
 }
 
 func NewWalletService(
@@ -34,14 +36,34 @@ func NewWalletService(
 	payment paymentproviders.PaymentProvider,
 	idempotencyManager *client.IdempotentRequest,
 	subRepo *subscription.SubscriptionRepository,
+	pricingServices ...*pricing.Service,
 ) *WalletService {
+	pricingService := pricing.NewService(repo.db)
+	if len(pricingServices) > 0 && pricingServices[0] != nil {
+		pricingService = pricingServices[0]
+	}
 
 	return &WalletService{
 		repo:               repo,
 		payment:            payment,
 		idempotencyManager: idempotencyManager,
 		subRepo:            subRepo,
+		pricing:            pricingService,
 	}
+}
+
+func (s *WalletService) QuoteDeposit(userID string, req DepositQuoteRequest) *response.APIResponse {
+	if req.Amount <= 0 {
+		return &response.APIResponse{Success: false, Message: "Deposit amount must be greater than zero", Error: "invalid_amount"}
+	}
+	if err := s.canAcceptDeposit(nil, userID, req.Amount); err != nil {
+		return depositLimitResponse(err)
+	}
+	quote, err := s.pricing.CreateDepositQuote(userID, req.Amount)
+	if err != nil {
+		return &response.APIResponse{Success: false, Message: "Could not calculate deposit fee", Error: err.Error()}
+	}
+	return &response.APIResponse{Success: true, Message: "Deposit fee quoted successfully", Data: quote}
 }
 
 func (svc *WalletService) GetMyWallet(userId string) *response.APIResponse {
@@ -193,21 +215,24 @@ func (s *WalletService) InitiateDeposit(
 	id := security.GenateUniqueID()
 	reference := security.GenerateReference()
 
-	wallet, err := s.repo.GetWalletByOwnerID(userId)
-	if err != nil {
-		return &response.APIResponse{
-			Success: false,
-			Message: "Invalid data",
-			Error:   err,
-		}
-	}
-
-	if err := s.canAcceptDeposit(nil, userId, req.Amount); err != nil {
-		return depositLimitResponse(err)
-	}
-
 	// 1. Move ALL stateful execution inside this function block
 	executionLogic := func() (int, interface{}, error) {
+		quote, err := s.pricing.Consume(strings.TrimSpace(req.QuoteID), userId, pricing.OperationDeposit)
+		if err != nil {
+			return http.StatusBadRequest, nil, fmt.Errorf("deposit quote expired; request a new quote: %w", err)
+		}
+		if req.Amount != quote.PrincipalAmount {
+			return http.StatusBadRequest, nil, errors.New("deposit amount does not match quote")
+		}
+
+		wallet, err := s.repo.GetWalletByOwnerID(userId)
+		if err != nil {
+			return http.StatusBadRequest, nil, fmt.Errorf("invalid wallet data: %w", err)
+		}
+		if err := s.canAcceptDeposit(nil, userId, req.Amount); err != nil {
+			return http.StatusBadRequest, nil, err
+		}
+
 		APP_ENV := os.Getenv("APP_ENV")
 		callback_url := fmt.Sprintf("%s/dashboard/wallet/deposit/callback", os.Getenv("APP_LOCAL_URL"))
 
@@ -216,7 +241,7 @@ func (s *WalletService) InitiateDeposit(
 		}
 
 		reqBody := &paymentproviders.DepositBody{
-			Amount:      req.Amount,
+			Amount:      quote.GrossCharge,
 			Currency:    "NGN",
 			Email:       email,
 			Reference:   reference,
@@ -231,16 +256,21 @@ func (s *WalletService) InitiateDeposit(
 
 		// Create the local deposit log record here
 		body := &WalletDeposit{
-			ID:        id,
-			Amount:    req.Amount,
-			Currency:  "NGN",
-			Reference: reference,
-			WalletID:  wallet.ID,
-			UserID:    userId,
-			Status:    "pending",
-			Provider:  "paystack",
-			CreatedAt: now,
-			UpdatedAt: now,
+			ID:                 id,
+			Amount:             quote.GrossCharge,
+			Currency:           "NGN",
+			Reference:          reference,
+			WalletID:           wallet.ID,
+			UserID:             userId,
+			Status:             "pending",
+			Provider:           "paystack",
+			QuoteID:            &quote.ID,
+			GrossAmount:        quote.GrossCharge,
+			WalletCreditAmount: quote.NetCredit,
+			ProviderFee:        quote.ProviderFee,
+			PricingVersion:     quote.PricingVersion,
+			CreatedAt:          now,
+			UpdatedAt:          now,
 		}
 
 		_, err = s.repo.CreateDeposit(body)
@@ -412,6 +442,10 @@ func (s *WalletService) CreditWalletTx(txRepo *WalletRepository, reference strin
 	if deposit.Amount != webhookAmount {
 		return deposit, ErrDepositAmountMismatch
 	}
+	creditAmount := deposit.WalletCreditAmount
+	if creditAmount <= 0 {
+		creditAmount = webhookAmount
+	}
 	if deposit.Status == "success" {
 		return deposit, nil
 	}
@@ -419,12 +453,12 @@ func (s *WalletService) CreditWalletTx(txRepo *WalletRepository, reference strin
 	if err != nil {
 		return deposit, err
 	}
-	if err := s.canAcceptDeposit(txRepo, deposit.UserID, webhookAmount); err != nil {
+	if err := s.canAcceptDeposit(txRepo, deposit.UserID, creditAmount); err != nil {
 		return deposit, err
 	}
 	balanceBefore := wallet.LedgerBalance
-	wallet.AvailableBalance += webhookAmount
-	wallet.LedgerBalance += webhookAmount
+	wallet.AvailableBalance += creditAmount
+	wallet.LedgerBalance += creditAmount
 	if _, err := txRepo.Update(wallet); err != nil {
 		return deposit, err
 	}
@@ -432,7 +466,7 @@ func (s *WalletService) CreditWalletTx(txRepo *WalletRepository, reference strin
 		return deposit, err
 	}
 	ledger := &WalletLedger{
-		ID: security.GenateUniqueID(), Amount: webhookAmount, UserID: deposit.UserID,
+		ID: security.GenateUniqueID(), Amount: creditAmount, UserID: deposit.UserID,
 		WalletID: deposit.WalletID, Currency: deposit.Currency, Type: WalletLedgerTypeCredit,
 		BalanceBefore: balanceBefore, BalanceAfter: wallet.LedgerBalance,
 		Reference: reference, CreatedAt: time.Now(), Source: "Paystack",
@@ -479,23 +513,28 @@ func (s *WalletService) CreditDedicatedAccountTransfer(reference string, webhook
 			Error:   err.Error(),
 		}
 	}
+	netCredit, providerFee, pricingVersion, err := s.pricing.DedicatedAccountNet(webhookAmount)
+	if err != nil {
+		return &response.APIResponse{Success: false, Message: "Could not calculate deposit fee", Error: err.Error()}
+	}
 
 	now := time.Now()
 	deposit := &WalletDeposit{
-		ID:        security.GenateUniqueID(),
-		UserID:    wallet.UserID,
-		WalletID:  wallet.ID,
-		Reference: reference,
-		Amount:    webhookAmount,
-		Currency:  wallet.Currency,
-		Status:    "success",
-		Provider:  "paystack_dedicated_account",
+		ID:          security.GenateUniqueID(),
+		UserID:      wallet.UserID,
+		WalletID:    wallet.ID,
+		Reference:   reference,
+		Amount:      webhookAmount,
+		Currency:    wallet.Currency,
+		Status:      "success",
+		Provider:    "paystack_dedicated_account",
+		GrossAmount: webhookAmount, WalletCreditAmount: netCredit, ProviderFee: providerFee, PricingVersion: pricingVersion,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
 
 	err = s.repo.ExecuteInTransaction(func(txRepo *WalletRepository) error {
-		if err := s.canAcceptDeposit(txRepo, wallet.UserID, webhookAmount); err != nil {
+		if err := s.canAcceptDeposit(txRepo, wallet.UserID, netCredit); err != nil {
 			return err
 		}
 
@@ -509,8 +548,8 @@ func (s *WalletService) CreditDedicatedAccountTransfer(reference string, webhook
 		}
 
 		balanceBefore := wallet.LedgerBalance
-		wallet.AvailableBalance += webhookAmount
-		wallet.LedgerBalance += webhookAmount
+		wallet.AvailableBalance += netCredit
+		wallet.LedgerBalance += netCredit
 
 		if _, err := txRepo.Update(wallet); err != nil {
 			return err
@@ -518,7 +557,7 @@ func (s *WalletService) CreditDedicatedAccountTransfer(reference string, webhook
 
 		ledger := &WalletLedger{
 			ID:            security.GenateUniqueID(),
-			Amount:        webhookAmount,
+			Amount:        netCredit,
 			UserID:        wallet.UserID,
 			WalletID:      wallet.ID,
 			Currency:      wallet.Currency,
@@ -576,6 +615,10 @@ func (s *WalletService) CreditDedicatedAccountTransferWithTx(
 	if err != nil {
 		return nil, err
 	}
+	netCredit, providerFee, pricingVersion, err := s.pricing.DedicatedAccountNet(webhookAmount)
+	if err != nil {
+		return nil, err
+	}
 	// Recheck after acquiring the wallet lock; another delivery may have
 	// created this reference while this transaction waited.
 	existing, err = txRepo.GetDepositByReferenceForUpdate(reference)
@@ -591,7 +634,7 @@ func (s *WalletService) CreditDedicatedAccountTransferWithTx(
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
-	if err := s.canAcceptDeposit(txRepo, wallet.UserID, webhookAmount); err != nil {
+	if err := s.canAcceptDeposit(txRepo, wallet.UserID, netCredit); err != nil {
 		return nil, err
 	}
 	now := time.Now()
@@ -599,19 +642,20 @@ func (s *WalletService) CreditDedicatedAccountTransferWithTx(
 		ID: security.GenateUniqueID(), UserID: wallet.UserID, WalletID: wallet.ID,
 		Reference: reference, Amount: webhookAmount, Currency: wallet.Currency,
 		Status: "success", Provider: "paystack_dedicated_account",
+		GrossAmount: webhookAmount, WalletCreditAmount: netCredit, ProviderFee: providerFee, PricingVersion: pricingVersion,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if _, err := txRepo.CreateDeposit(deposit); err != nil {
 		return nil, err
 	}
 	balanceBefore := wallet.LedgerBalance
-	wallet.AvailableBalance += webhookAmount
-	wallet.LedgerBalance += webhookAmount
+	wallet.AvailableBalance += netCredit
+	wallet.LedgerBalance += netCredit
 	if _, err := txRepo.Update(wallet); err != nil {
 		return nil, err
 	}
 	ledger := &WalletLedger{
-		ID: security.GenateUniqueID(), Amount: webhookAmount, UserID: wallet.UserID,
+		ID: security.GenateUniqueID(), Amount: netCredit, UserID: wallet.UserID,
 		WalletID: wallet.ID, Currency: wallet.Currency, Type: WalletLedgerTypeCredit,
 		BalanceBefore: balanceBefore, BalanceAfter: wallet.LedgerBalance,
 		Reference: reference, CreatedAt: now, Source: "Paystack Dedicated Account",

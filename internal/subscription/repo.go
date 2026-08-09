@@ -158,6 +158,22 @@ func (s *SubscriptionRepository) CanCreatePlan(
 	return nil
 }
 
+// CanPublishPlan revalidates an already-counted draft against the user's
+// current subscription. This catches subscription downgrades between draft
+// creation and confirmation.
+func (s *SubscriptionRepository) CanPublishPlan(userID uuid.UUID, currentPlanCount int64) error {
+	sub, err := s.GetActiveSubscription(userID)
+	if err != nil {
+		return err
+	}
+
+	limit := sub.Plan.MaxLockedPlans
+	if !unlimitedInt(limit) && currentPlanCount > int64(limit) {
+		return ErrPlanLimitReached
+	}
+	return nil
+}
+
 func (s *SubscriptionRepository) CanCreateEnvelope(
 	userID uuid.UUID,
 	currentEnvelopeCount int64,
@@ -245,6 +261,62 @@ func (s *SubscriptionRepository) ReserveManagedVolume(
 
 	usage.ManagedVolumeKobo += amountKobo
 	return tx.Save(usage).Error
+}
+
+func (s *SubscriptionRepository) HasFreeWithdrawal(userID uuid.UUID) (bool, error) {
+	sub, err := s.GetActiveSubscription(userID)
+	if err != nil {
+		return false, err
+	}
+	usage, err := s.getOrCreateMonthlyUsage(s.db, userID)
+	if err != nil {
+		return false, err
+	}
+	return usage.FreeWithdrawalsUsed+usage.FreeWithdrawalsReserved < sub.Plan.FreeWithdrawalsMonthly, nil
+}
+
+func (s *SubscriptionRepository) ReserveFreeWithdrawalTx(tx *gorm.DB, userID uuid.UUID) (bool, string, error) {
+	sub, err := s.getActiveSubscription(tx, userID)
+	if err != nil {
+		return false, "", err
+	}
+	usage, err := s.getOrCreateMonthlyUsage(tx, userID)
+	if err != nil {
+		return false, "", err
+	}
+	if usage.FreeWithdrawalsUsed+usage.FreeWithdrawalsReserved >= sub.Plan.FreeWithdrawalsMonthly {
+		return false, usage.PeriodKey, nil
+	}
+	usage.FreeWithdrawalsReserved++
+	return true, usage.PeriodKey, tx.Save(usage).Error
+}
+
+func (s *SubscriptionRepository) FinalizeFreeWithdrawalTx(tx *gorm.DB, userID uuid.UUID, period string) error {
+	var usage MonthlyUsage
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id=? AND period_key=?", userID, period).First(&usage).Error; err != nil {
+		return err
+	}
+	if usage.FreeWithdrawalsReserved > 0 {
+		usage.FreeWithdrawalsReserved--
+		usage.FreeWithdrawalsUsed++
+	}
+	return tx.Save(&usage).Error
+}
+
+func (s *SubscriptionRepository) ReleaseFreeWithdrawalTx(tx *gorm.DB, userID uuid.UUID, period string, restoreUsed bool) error {
+	if period == "" {
+		return nil
+	}
+	var usage MonthlyUsage
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id=? AND period_key=?", userID, period).First(&usage).Error; err != nil {
+		return err
+	}
+	if usage.FreeWithdrawalsReserved > 0 {
+		usage.FreeWithdrawalsReserved--
+	} else if restoreUsed && usage.FreeWithdrawalsUsed > 0 {
+		usage.FreeWithdrawalsUsed--
+	}
+	return tx.Save(&usage).Error
 }
 
 func (s *SubscriptionRepository) getOrCreateMonthlyUsage(

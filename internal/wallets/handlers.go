@@ -60,6 +60,19 @@ func (h *WalletHandler) InitiateDeposit(c *fiber.Ctx) error {
 	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
 }
 
+func (h *WalletHandler) QuoteDeposit(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(string)
+	var req DepositQuoteRequest
+	if err := c.BodyParser(&req); err != nil {
+		return response.Error(c, fiber.StatusBadRequest, "Invalid request payload", err)
+	}
+	result := h.svc.QuoteDeposit(userID, req)
+	if result.Error != nil {
+		return response.Error(c, walletErrorStatus(result.Error), result.Message, result.Error)
+	}
+	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
+}
+
 func (h *WalletHandler) GetAllDeposits(c *fiber.Ctx) error {
 	userID := c.Locals("user_id").(string)
 

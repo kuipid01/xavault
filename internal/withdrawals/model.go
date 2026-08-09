@@ -68,7 +68,18 @@ type Withdrawal struct {
 	DestinationID   string
 	IdempotencyKey  string
 
-	FailureReason string
+	FailureReason       string
+	QuoteID             *string `gorm:"type:uuid"`
+	ProviderTransferFee int64
+	GovernmentLevy      int64
+	XavaultSubsidy      int64
+	UserFee             int64
+	TotalDeduction      int64
+	RecipientAmount     int64
+	AllowanceApplied    bool
+	AllowanceState      string
+	AllowancePeriod     string
+	PricingVersion      string
 }
 
 func (w *Withdrawal) BeforeCreate(tx *gorm.DB) error {

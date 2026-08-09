@@ -60,6 +60,8 @@ type MonthlyUsage struct {
 
 	FreeFlexibleWithdrawalsUsed  int `gorm:"not null;default:0"`
 	FreeEmergencyWithdrawalsUsed int `gorm:"not null;default:0"`
+	FreeWithdrawalsUsed          int `gorm:"not null;default:0"`
+	FreeWithdrawalsReserved      int `gorm:"not null;default:0"`
 }
 
 func (m *MonthlyUsage) BeforeCreate(tx *gorm.DB) error {
@@ -82,6 +84,7 @@ type SubscriptionPlan struct {
 
 	FreeFlexibleWithdrawalsMonthly  int `gorm:"not null"`
 	FreeEmergencyWithdrawalsMonthly int `gorm:"not null"`
+	FreeWithdrawalsMonthly          int `gorm:"not null"`
 
 	HasSalarySplit     bool `gorm:"not null;default:false"`
 	HasFullAnalytics   bool `gorm:"not null;default:false"`

@@ -7,6 +7,7 @@ type PreviewWithdrawalRequest struct {
 }
 
 type RequestWithdrawalRequest struct {
+	QuoteID         string  `json:"quote_id"`
 	SourceType      string  `json:"source_type"`
 	EnvelopeID      *string `json:"envelope_id"`
 	Amount          int64   `json:"amount"`
@@ -18,24 +19,41 @@ type RequestWithdrawalRequest struct {
 }
 
 type WithdrawalResponse struct {
-	ID          string  `json:"id"`
-	UserID      string  `json:"user_id"`
-	WalletID    string  `json:"wallet_id"`
-	PlanID      string  `json:"plan_id"`
-	EnvelopeID  *string `json:"envelope_id"`
-	SourceType  string  `json:"source_type"`
-	Status      string  `json:"status"`
-	Amount      int64   `json:"amount"`
-	Currency    string  `json:"currency"`
-	Reason      string  `json:"reason"`
-	Reference   string  `json:"reference"`
-	Description string  `json:"description"`
-	PaidAt      *string `json:"paid_at"`
-	CreatedAt   string  `json:"created_at"`
-	UpdatedAt   string  `json:"updated_at"`
+	ID                  string  `json:"id"`
+	UserID              string  `json:"user_id"`
+	WalletID            string  `json:"wallet_id"`
+	PlanID              string  `json:"plan_id"`
+	EnvelopeID          *string `json:"envelope_id"`
+	SourceType          string  `json:"source_type"`
+	Status              string  `json:"status"`
+	Amount              int64   `json:"amount"`
+	Currency            string  `json:"currency"`
+	Reason              string  `json:"reason"`
+	Reference           string  `json:"reference"`
+	Description         string  `json:"description"`
+	PaidAt              *string `json:"paid_at"`
+	CreatedAt           string  `json:"created_at"`
+	UpdatedAt           string  `json:"updated_at"`
+	ProviderTransferFee int64   `json:"provider_transfer_fee"`
+	GovernmentLevy      int64   `json:"government_levy"`
+	XavaultSubsidy      int64   `json:"xavault_subsidy"`
+	UserFee             int64   `json:"user_fee"`
+	TotalDeduction      int64   `json:"total_deduction"`
+	RecipientAmount     int64   `json:"recipient_amount"`
+	AllowanceApplied    bool    `json:"allowance_applied"`
 }
 
 type PreviewWithdrawalResponse struct {
+	QuoteID             string   `json:"quote_id,omitempty"`
+	ProviderTransferFee int64    `json:"provider_transfer_fee"`
+	GovernmentLevy      int64    `json:"government_levy"`
+	XavaultSubsidy      int64    `json:"xavault_subsidy"`
+	UserFee             int64    `json:"user_fee"`
+	TotalDeduction      int64    `json:"total_deduction"`
+	RecipientAmount     int64    `json:"recipient_amount"`
+	AllowanceApplied    bool     `json:"allowance_applied"`
+	PricingVersion      string   `json:"pricing_version,omitempty"`
+	ExpiresAt           string   `json:"expires_at,omitempty"`
 	CanWithdraw         bool     `json:"can_withdraw"`
 	SourceType          string   `json:"source_type"`
 	PlanID              string   `json:"plan_id"`

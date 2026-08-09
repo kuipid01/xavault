@@ -129,8 +129,36 @@ func (p *PaystackProvider) ListBanks(ctx context.Context) (*ListBanksResponse, e
 		return nil, fmt.Errorf("paystack bank list failed: %s", respTarget.Message)
 	}
 
+	// Paystack limits test integrations to three resolves against live bank
+	// codes per day. Their dedicated code 001 resolves any valid 10-digit test
+	// account without consuming that live-bank quota, so expose it in the
+	// selector only when this provider is configured with a test secret.
+	if strings.HasPrefix(p.apiKey, "sk_test_") {
+		respTarget.Data = prependPaystackTestBank(respTarget.Data)
+	}
+
 	p.Set(respTarget.Data)
 	return &respTarget, nil
+}
+
+func prependPaystackTestBank(banks []PaystackBank) []PaystackBank {
+	for _, bank := range banks {
+		if bank.Code == "001" {
+			return banks
+		}
+	}
+
+	testBank := PaystackBank{
+		ID:       24,
+		Name:     "Paystack Test Bank (any 10 digits)",
+		Slug:     "test-bank",
+		Code:     "001",
+		Country:  "Nigeria",
+		Currency: "NGN",
+		Type:     "nuban",
+		Active:   true,
+	}
+	return append([]PaystackBank{testBank}, banks...)
 }
 
 func (p *PaystackProvider) ResolveBankAccount(
