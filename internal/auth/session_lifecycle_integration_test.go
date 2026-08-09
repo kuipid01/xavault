@@ -27,7 +27,7 @@ func TestCompletedRegistrationCreatesWalletAndFreeSubscription(t *testing.T) {
 	walletService := wallets.NewWalletService(wallets.NewWalletRepository(db), nil, nil, subRepo)
 	service := auth.NewAuthService(userRepo, authRepo, nil, &auth.TokenService{AccessSecret: []byte("test")}, walletService)
 	service.SetRegistrationDB(db)
-	result := service.Register(auth.RegisterRequest{Email: email, Password: "Strong!Pass1", ConfirmPassword: "Strong!Pass1", FirstName: "Free", LastName: "User", Country: "NG", PhoneNumber: "08012345678"})
+	result := service.Register(auth.RegisterRequest{Email: email, Password: "Strong!Pass1", ConfirmPassword: "Strong!Pass1", FirstName: "Free", LastName: "User", Country: "NG", PhoneNumber: "08012345678", Pin: "1234"})
 	if !result.Success {
 		t.Fatalf("registration failed: %+v", result)
 	}

@@ -36,6 +36,7 @@ func validateRegistrationData(userData RegisterRequest) (RegisterRequest, map[st
 	userData.FirstName = strings.TrimSpace(userData.FirstName)
 	userData.LastName = strings.TrimSpace(userData.LastName)
 	userData.Country = strings.ToUpper(strings.TrimSpace(userData.Country))
+	userData.Pin = strings.TrimSpace(userData.Pin)
 
 	if len(userData.Email) == 0 {
 		errors["email"] = "Email is required"
@@ -64,6 +65,9 @@ func validateRegistrationData(userData RegisterRequest) (RegisterRequest, map[st
 	if userData.Password != userData.ConfirmPassword {
 		errors["password"] = "Passwords do not match"
 	}
+	if pinErrors := validateWithdrawalPin(userData.Pin); len(pinErrors) > 0 {
+		errors["pin"] = pinErrors["pin"]
+	}
 	if !mustContainSpecialCharacters(userData.Password) {
 		errors["password"] = "Password must contain at least one special character"
 	}
@@ -80,6 +84,7 @@ func validateRegistrationData(userData RegisterRequest) (RegisterRequest, map[st
 		LastName:        userData.LastName,
 		Country:         countryCode,
 		PhoneNumber:     phoneNumber,
+		Pin:             userData.Pin,
 	}, errors
 }
 

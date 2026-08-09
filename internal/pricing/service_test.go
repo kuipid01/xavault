@@ -2,6 +2,15 @@ package pricing
 
 import "testing"
 
+func TestPricingTableNamesMatchVersionedMigration(t *testing.T) {
+	if got := (FeeRule{}).TableName(); got != "provider_fee_rules" {
+		t.Fatalf("fee rule table=%q", got)
+	}
+	if got := (Quote{}).TableName(); got != "fee_quotes" {
+		t.Fatalf("quote table=%q", got)
+	}
+}
+
 func TestFeeBoundaries(t *testing.T) {
 	threshold := int64(250000)
 	capFee := int64(200000)

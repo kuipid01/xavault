@@ -56,3 +56,5 @@ type Quote struct {
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"-"`
 }
+
+func (Quote) TableName() string { return "fee_quotes" }

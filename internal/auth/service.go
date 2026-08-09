@@ -85,17 +85,26 @@ func (s *AuthService) Register(req RegisterRequest) *response.APIResponse {
 			Error:   err,
 		}
 	}
+	withdrawalPinHash, err := hashPassword(validData.Pin)
+	if err != nil {
+		return &response.APIResponse{
+			Success: false,
+			Message: "We could not secure the withdrawal PIN",
+			Error:   err,
+		}
+	}
 	now := time.Now()
 	finalUser = users.User{
-		ID:              uuid.Must(uuid.NewV7()).String(),
-		Email:           validData.Email,
-		Password:        hashedPassword,
-		FirstName:       validData.FirstName,
-		LastName:        validData.LastName,
-		EmailVerifiedAt: &now,
-		MailVerified:    true,
-		Country:         validData.Country,
-		PhoneNumber:     validData.PhoneNumber,
+		ID:                uuid.Must(uuid.NewV7()).String(),
+		Email:             validData.Email,
+		Password:          hashedPassword,
+		FirstName:         validData.FirstName,
+		LastName:          validData.LastName,
+		EmailVerifiedAt:   &now,
+		MailVerified:      true,
+		Country:           validData.Country,
+		PhoneNumber:       validData.PhoneNumber,
+		WithdrawalPinHash: &withdrawalPinHash,
 	}
 	nickname := normalizeNickname(req.Nickname)
 	if nickname != "" {

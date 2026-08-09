@@ -9,6 +9,7 @@ type RegisterRequest struct {
 	Country         string `json:"country" validate:"required"`
 	PhoneNumber     string `json:"phone_number" validate:"required"`
 	Nickname        string `json:"nickname"`
+	Pin             string `json:"pin" validate:"required"`
 }
 
 type StartRegistrationRequest struct {
