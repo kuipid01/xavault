@@ -23,7 +23,7 @@ services:
     environment:
       DB_HOST: postgres
       DB_USER: salary_vault
-      DB_PASSWORD: salary_vault_password
+      DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: salary_vault
       BREVO_API_KEY: ${BREVO_API_KEY:?BREVO_API_KEY is required}
       BREVO_SENDER_NAME: ${BREVO_SENDER_NAME:-xavault}
