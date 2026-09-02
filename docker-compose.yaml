@@ -9,6 +9,11 @@ services:
       POSTGRES_DB: salary_vault
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U salary_vault -d salary_vault"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     volumes:
       - salary_vault_pgdata:/var/lib/postgresql/data
 
