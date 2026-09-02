@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -28,6 +29,11 @@ func NewBrevoMailer() *BrevoMailer {
 		Client:      &http.Client{Timeout: 10 * time.Second},
 		Endpoint:    "https://api.brevo.com/v3/smtp/email",
 	}
+}
+
+type BrevoErrorResponse struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 type BrevoRecipient struct {
@@ -97,7 +103,17 @@ func (b *BrevoMailer) sendHTMLMail(
 	defer res.Body.Close()
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return fmt.Errorf("brevo email failed with status: %d", res.StatusCode)
+		respBytes, readErr := io.ReadAll(res.Body)
+		if readErr != nil {
+			return fmt.Errorf("brevo email failed with status %d (could not read response body: %v)", res.StatusCode, readErr)
+		}
+
+		var brevoErr BrevoErrorResponse
+		if err := json.Unmarshal(respBytes, &brevoErr); err == nil && brevoErr.Message != "" {
+			return fmt.Errorf("brevo API error [%d %s]: %s", res.StatusCode, brevoErr.Code, brevoErr.Message)
+		}
+
+		return fmt.Errorf("brevo API error [%d]: %s", res.StatusCode, string(respBytes))
 	}
 
 	return nil
@@ -115,7 +131,7 @@ func (b *BrevoMailer) SendMailVerification(email, otp string) error {
 		ExpiryMinutes int
 	}{
 		Name:          "",
-		AppName:       "XAVAUL",
+		AppName:       "XAVAULT",
 		OTP:           otp,
 		ExpiryMinutes: 30,
 	}

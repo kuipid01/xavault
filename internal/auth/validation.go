@@ -1,6 +1,9 @@
 package auth
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 func validateForgetPasswordData(req ForgetPasswordRequest) map[string]string {
 	errors := make(map[string]string)
@@ -55,8 +58,17 @@ func validateRegistrationData(userData RegisterRequest) (RegisterRequest, map[st
 		errors["phone_number"] = "PhoneNumber is required"
 	}
 
-	if len(userData.Password) < 6 {
-		errors["password"] = "Password must be at least 6 characters"
+	if len(userData.Password) < 8 {
+		errors["password"] = "Password must be at least 8 characters"
+	} else {
+		hasLower := regexp.MustCompile(`[a-z]`).MatchString(userData.Password)
+		hasUpper := regexp.MustCompile(`[A-Z]`).MatchString(userData.Password)
+		hasNumber := regexp.MustCompile(`[0-9]`).MatchString(userData.Password)
+		hasSpecial := regexp.MustCompile(`[^a-zA-Z0-9]`).MatchString(userData.Password)
+
+		if !hasLower || !hasUpper || !hasNumber || !hasSpecial {
+			errors["password"] = "Password must contain at least 1 small letter, 1 capital letter, 1 number, and 1 special character"
+		}
 	}
 
 	if !strings.Contains(userData.Email, "@") {
@@ -68,9 +80,7 @@ func validateRegistrationData(userData RegisterRequest) (RegisterRequest, map[st
 	if pinErrors := validateWithdrawalPin(userData.Pin); len(pinErrors) > 0 {
 		errors["pin"] = pinErrors["pin"]
 	}
-	if !mustContainSpecialCharacters(userData.Password) {
-		errors["password"] = "Password must contain at least one special character"
-	}
+
 	phoneNumber, countryCode, phoneErr := normalizePhoneForCountry(userData.Country, userData.PhoneNumber)
 	if phoneErr != "" {
 		errors["phone_number"] = phoneErr
@@ -85,6 +95,9 @@ func validateRegistrationData(userData RegisterRequest) (RegisterRequest, map[st
 		Country:         countryCode,
 		PhoneNumber:     phoneNumber,
 		Pin:             userData.Pin,
+		Gender:          userData.Gender,
+		DateOfBirth:     userData.DateOfBirth,
+		Nickname:        userData.Nickname,
 	}, errors
 }
 

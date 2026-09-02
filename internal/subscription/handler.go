@@ -82,6 +82,7 @@ func (h *SubscriptionHandler) GetActiveSubscription(c *fiber.Ctx) error {
 	}
 
 	result, err := h.service.GetActiveSubscription(userID)
+	fmt.Printf("HEY RESULT %v", result)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "No active subscription found"})
 	}

@@ -15,6 +15,7 @@ type User struct {
 	MailVerified                bool       `json:"mail_verified"`
 	Country                     string     `json:"country"`
 	PhoneNumber                 string     `json:"phone_number"`
+	Gender                      *string    `json:"gender"`
 	Nickname                    *string    `json:"nickname" gorm:"uniqueIndex"`
 	DateOfBirth                 *time.Time `json:"date_of_birth"`
 	Address                     *string    `json:"address"`

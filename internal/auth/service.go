@@ -94,6 +94,19 @@ func (s *AuthService) Register(req RegisterRequest) *response.APIResponse {
 		}
 	}
 	now := time.Now()
+	var dob *time.Time
+	if validData.DateOfBirth != "" {
+		parsedDob, err := time.Parse("2006-01-02", validData.DateOfBirth)
+		if err == nil {
+			dob = &parsedDob
+		}
+	}
+	var gender *string
+	if validData.Gender != "" {
+		g := validData.Gender
+		gender = &g
+	}
+
 	finalUser = users.User{
 		ID:                uuid.Must(uuid.NewV7()).String(),
 		Email:             validData.Email,
@@ -105,6 +118,8 @@ func (s *AuthService) Register(req RegisterRequest) *response.APIResponse {
 		Country:           validData.Country,
 		PhoneNumber:       validData.PhoneNumber,
 		WithdrawalPinHash: &withdrawalPinHash,
+		Gender:            gender,
+		DateOfBirth:       dob,
 	}
 	nickname := normalizeNickname(req.Nickname)
 	if nickname != "" {

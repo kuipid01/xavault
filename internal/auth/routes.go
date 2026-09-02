@@ -11,7 +11,7 @@ import (
 func RegisterAuthRoutes(v1 fiber.Router, h *AuthHandler) {
 	auth := v1.Group("/auth")
 
-	auth.Post("/register", middleware.SensitiveRateLimit(middleware.RateLimitPolicy{Name: "register", Limit: 5, Window: time.Hour}), h.Register)
+	auth.Post("/register", h.Register)
 	auth.Post("/register/start", middleware.SensitiveRateLimit(middleware.RateLimitPolicy{Name: "register_start", Limit: 10, Window: time.Hour}), h.StartRegistration)
 	auth.Post("/register/verify-mail", middleware.SensitiveRateLimit(middleware.RateLimitPolicy{Name: "register_verify", Limit: 8, Window: 15 * time.Minute}), h.VerifyRegistrationMail)
 	auth.Post("/login", middleware.SensitiveRateLimit(middleware.RateLimitPolicy{Name: "login", Limit: 8, Window: 15 * time.Minute}), h.Login)
