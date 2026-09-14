@@ -12,4 +12,5 @@ func RegisterSubscriptionRoutes(v1 fiber.Router, h *SubscriptionHandler) {
 	subs.Get("/plans", h.GetPlans)
 	subs.Post("/", h.CreateSubscription)
 	subs.Get("/active", h.GetActiveSubscription)
+	subs.Post("/payment/:reference/dismiss", h.DismissSubscriptionPayment)
 }

@@ -2,6 +2,7 @@ package withdrawals
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/kuipid01/salary-vault/internal/shared/response"
@@ -123,6 +124,34 @@ func (h *WithdrawalHandler) GetWithdrawalByID(c *fiber.Ctx) error {
 	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
 }
 
+// CancelWithdrawal godoc
+// POST /api/v1/withdrawals/:withdrawalId/cancel
+// Cancels a pending withdrawal that has not been sent to the provider yet, so
+// it stops being polled and the reserved funds/allowance are released.
+func (h *WithdrawalHandler) CancelWithdrawal(c *fiber.Ctx) error {
+	userID, ok := c.Locals("user_id").(string)
+	if !ok || userID == "" {
+		return response.Error(c, fiber.StatusUnauthorized, "Unauthorized", "unauthorized")
+	}
+
+	withdrawalID := c.Params("withdrawalId")
+	if withdrawalID == "" {
+		return response.Error(c, fiber.StatusBadRequest, "Withdrawal ID is required", "withdrawal_id_required")
+	}
+
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	_ = c.BodyParser(&req)
+
+	result := h.svc.CancelWithdrawal(userID, withdrawalID, strings.TrimSpace(req.Reason))
+	if result.Error != nil {
+		return response.Error(c, getWithdrawalStatusCode(result.Error), result.Message, result.Error)
+	}
+
+	return response.Success(c, fiber.StatusOK, result.Message, result.Data)
+}
+
 func getWithdrawalStatusCode(err interface{}) int {
 	switch err {
 	case ErrWithdrawalNotFound:
@@ -162,6 +191,9 @@ func getWithdrawalStatusCode(err interface{}) int {
 		return fiber.StatusConflict
 
 	case ErrWithdrawalAlreadyProcessing:
+		return fiber.StatusConflict
+
+	case ErrWithdrawalNotCancellable:
 		return fiber.StatusConflict
 
 	case ErrWithdrawalPinNotSet:

@@ -23,6 +23,16 @@ type Service struct {
 	alerts      *alerts.Service
 }
 
+// depositCheckoutTTL matches the Paystack checkout link TTL the mobile app
+// enforces (CHECKOUT_LINK_TTL_MS = 24h). Pending deposits older than this are
+// expired instead of being polled against the provider forever.
+const depositCheckoutTTL = 24 * time.Hour
+
+// withdrawalResolutionTTL bounds how long the worker keeps asking the provider
+// about a pending/processing withdrawal. Paystack transfers normally resolve in
+// minutes; anything still open after 48h is marked failed so polling stops.
+const withdrawalResolutionTTL = 48 * time.Hour
+
 func (s *Service) SetAlertPublisher(publisher *alerts.Service) { s.alerts = publisher }
 
 func (s *Service) publishAlert(ctx context.Context, input alerts.Input) {
@@ -298,6 +308,19 @@ func (s *Service) ReconcileStuck(ctx context.Context) error {
 		return err
 	}
 	for _, withdrawal := range stuckWithdrawals {
+		// Bug fix: a withdrawal that never resolved within the TTL stops
+		// being polled against the provider on every run. No money has moved
+		// locally (the debit happens at completion), so marking it failed is
+		// safe; a late provider success is still honored on webhook.
+		if time.Since(withdrawal.CreatedAt) > withdrawalResolutionTTL {
+			result := s.withdrawals.FailStaleWithdrawal(withdrawal.Reference, "withdrawal unresolved within the reconciliation window")
+			if result.Error != nil {
+				log.Printf(`{"level":"error","event":"withdrawal_expire_failed","reference":%q,"error":%q}`, withdrawal.Reference, fmt.Sprint(result.Error))
+			} else {
+				log.Printf(`{"level":"info","event":"withdrawal_expired","reference":%q}`, withdrawal.Reference)
+			}
+			continue
+		}
 		reference := strings.TrimSpace(withdrawal.ProviderReference)
 		if reference == "" {
 			reference = withdrawal.Reference
@@ -329,6 +352,17 @@ func (s *Service) ReconcileStuck(ctx context.Context) error {
 		return err
 	}
 	for _, deposit := range deposits {
+		// Bug fix: an abandoned checkout link never completes. Expire it so
+		// this deposit stops being checked against the provider on every
+		// reconciliation run - even if the app's dismiss call never landed.
+		if time.Since(deposit.CreatedAt) > depositCheckoutTTL {
+			if err := s.wallets.ExpireStaleDeposit(deposit.Reference); err != nil {
+				log.Printf(`{"level":"error","event":"deposit_expire_failed","reference":%q,"error":%q}`, deposit.Reference, err.Error())
+			} else {
+				log.Printf(`{"level":"info","event":"deposit_expired","reference":%q}`, deposit.Reference)
+			}
+			continue
+		}
 		verify, err := s.provider.VerifyDeposit(ctx, deposit.Reference)
 		if err != nil {
 			log.Printf(`{"level":"error","event":"deposit_reconcile_provider_error","reference":%q}`, deposit.Reference)

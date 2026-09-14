@@ -360,3 +360,25 @@ func (r *WithdrawalRepository) MarkReversedWithTx(
 		"reversed_at":     &now,
 	}).Error
 }
+
+// MarkCancelledWithTx marks a user-cancelled withdrawal. Only a pending
+// withdrawal whose transfer never reached the provider is eligible, so no
+// money has moved and nothing needs refunding.
+func (r *WithdrawalRepository) MarkCancelledWithTx(
+	tx *gorm.DB,
+	withdrawalID string,
+	reason string,
+) error {
+	if tx == nil {
+		return errors.New("transaction is required")
+	}
+	now := time.Now()
+	return tx.Model(&Withdrawal{}).
+		Where("id = ? AND status = ?", withdrawalID, WithdrawalStatusPending).
+		Updates(map[string]interface{}{
+			"status":          WithdrawalStatusCancelled,
+			"provider_status": "cancelled",
+			"failure_reason":  reason,
+			"cancelled_at":    &now,
+		}).Error
+}

@@ -3,6 +3,7 @@ package subscription
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -68,6 +69,33 @@ func (h *SubscriptionHandler) CreateSubscription(c *fiber.Ctx) error {
 	fmt.Println("RESPONSE FROM CALL", result)
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"message": "Subscription payment initiated. Complete payment to activate.",
+		"data":    result,
+	})
+}
+
+// DismissSubscriptionPayment godoc
+// POST /api/v1/subscriptions/payment/:reference/dismiss
+// Cancels an abandoned subscription checkout the user dismissed, so the
+// client stops checking and the pending row is cleaned up.
+func (h *SubscriptionHandler) DismissSubscriptionPayment(c *fiber.Ctx) error {
+	userIDStr := c.Locals("user_id").(string)
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid user ID"})
+	}
+
+	reference := strings.TrimSpace(c.Params("reference"))
+	if reference == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Reference is required"})
+	}
+
+	result, err := h.service.DismissSubscriptionPayment(userID, reference)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"message": "Subscription payment dismissed",
 		"data":    result,
 	})
 }

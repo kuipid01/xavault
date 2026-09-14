@@ -5,6 +5,7 @@ import (
 	"github.com/kuipid01/salary-vault/internal/auth"
 	bankaccounts "github.com/kuipid01/salary-vault/internal/bank_accounts"
 	"github.com/kuipid01/salary-vault/internal/config"
+	"github.com/kuipid01/salary-vault/internal/devtools"
 	"github.com/kuipid01/salary-vault/internal/envelope"
 	"github.com/kuipid01/salary-vault/internal/reconciliation"
 	"github.com/kuipid01/salary-vault/internal/shared/response"
@@ -39,6 +40,7 @@ func RegisterRoutes(app *fiber.App, cfg *config.Config, container *Container) {
 	waitlist.RegisterRoutes(v1, container.Waitlist.Hnd)
 	subscription.RegisterSubscriptionRoutes(v1, container.SubscriptionHND)
 	reconciliation.RegisterRoutes(v1, container.ReconciliationHND)
+	devtools.RegisterRoutes(v1, container.db, cfg)
 	webhookAdmin := v1.Group("/admin/webhooks", reconciliation.AdminOnly())
 	webhookAdmin.Post("/:id/replay", container.WebhookHND.ReplayStoredEvent)
 	v1.Get("/", func(c *fiber.Ctx) error {

@@ -116,6 +116,13 @@ func (s *SubscriptionService) CreateSubscription(
 	}, nil
 }
 
+// DismissSubscriptionPayment cancels an abandoned subscription checkout so the
+// client stops checking and the stale pending row is cleaned up. Webhook
+// activation still works if the user completes payment anyway.
+func (s *SubscriptionService) DismissSubscriptionPayment(userID uuid.UUID, reference string) (*UserSubscription, error) {
+	return s.subRepo.DismissPendingSubscription(userID, reference)
+}
+
 // ActivateSubscription is called from the Paystack charge.success webhook.
 // It finds the existing pending subscription by the Paystack reference and activates it.
 func (s *SubscriptionService) ActivateSubscription(userIDStr, planIDStr, providerRef string, amount int64, currency string) error {

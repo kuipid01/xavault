@@ -487,6 +487,65 @@ func (s *WithdrawalService) RequestWithdrawal(
 	}
 }
 
+// CancelWithdrawal cancels a withdrawal the user no longer wants. Only a
+// pending withdrawal whose transfer never reached the provider can be
+// cancelled: no money has moved locally (plan funds stay locked until
+// Paystack confirms), so cancelling just releases the reservation and stops
+// all polling for it. Withdrawals already sent to Paystack cannot be undone
+// and return ErrWithdrawalAlreadyProcessing.
+func (s *WithdrawalService) CancelWithdrawal(userID string, withdrawalID string, reason string) *response.APIResponse {
+	withdrawalID = strings.TrimSpace(withdrawalID)
+	if withdrawalID == "" {
+		return &response.APIResponse{
+			Success: false,
+			Message: "Withdrawal ID is required",
+			Error:   "withdrawal_id_required",
+		}
+	}
+
+	err := s.repo.WithTransaction(func(tx *gorm.DB) error {
+		withdrawal, err := s.repo.FindByIDForUpdate(tx, withdrawalID)
+		if err != nil {
+			return err
+		}
+		if withdrawal == nil || withdrawal.UserID != userID {
+			return ErrWithdrawalNotFound
+		}
+		if withdrawal.Status != WithdrawalStatusPending {
+			return ErrWithdrawalNotCancellable
+		}
+		if strings.TrimSpace(withdrawal.ProviderReference) != "" {
+			return ErrWithdrawalAlreadyProcessing
+		}
+		if withdrawal.AllowanceApplied && withdrawal.AllowanceState == "reserved" {
+			if err := s.subRepo.ReleaseFreeWithdrawalTx(tx, uuid.MustParse(withdrawal.UserID), withdrawal.AllowancePeriod, false); err != nil {
+				return err
+			}
+			if err := tx.Model(withdrawal).Update("allowance_state", "released").Error; err != nil {
+				return err
+			}
+		}
+		return s.repo.MarkCancelledWithTx(tx, withdrawal.ID, reason)
+	})
+	if err != nil {
+		return withdrawalErrorResponse("Could not cancel withdrawal", err)
+	}
+
+	return &response.APIResponse{
+		Success: true,
+		Message: "Withdrawal cancelled successfully",
+	}
+}
+
+// FailStaleWithdrawal terminates a withdrawal that never resolved within the
+// reconciliation window so it stops being polled against the provider on every
+// run. Safe because no money is debited locally until Paystack confirms
+// success; a late provider success is still honored by
+// CompleteProviderWithdrawalTx.
+func (s *WithdrawalService) FailStaleWithdrawal(reference string, reason string) *response.APIResponse {
+	return s.FailProviderWithdrawal(reference, "failed", reason)
+}
+
 func (s *WithdrawalService) markFailedWithdrawalInitiation(
 	withdrawalID string,
 	reason string,
@@ -691,7 +750,12 @@ func (s *WithdrawalService) CompleteProviderWithdrawalTx(tx *gorm.DB, reference,
 	if withdrawal.Status == WithdrawalStatusPaid {
 		return nil
 	}
-	if withdrawal.Status == WithdrawalStatusFailed || withdrawal.Status == WithdrawalStatusCancelled || withdrawal.Status == WithdrawalStatusReversed {
+	// Bug fix: a failed or cancelled withdrawal never had money debited
+	// locally (the debit happens only in this function), so a late provider
+	// success must still debit and mark it paid - otherwise the user would
+	// keep the plan funds AND receive the bank transfer. Reversed stays
+	// terminal: it was already refunded.
+	if withdrawal.Status == WithdrawalStatusReversed {
 		return fmt.Errorf("withdrawal is already final with status %s", withdrawal.Status)
 	}
 	totalDeduction := withdrawal.TotalDeduction

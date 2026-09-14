@@ -18,6 +18,7 @@ var (
 	ErrPendingWithdrawalExists         = errors.New("pending withdrawal already exists")
 	ErrWithdrawalRequestInProgress     = errors.New("withdrawal request is still being prepared")
 	ErrWithdrawalAlreadyProcessing     = errors.New("withdrawal is already processing with provider")
+	ErrWithdrawalNotCancellable        = errors.New("withdrawal can no longer be cancelled")
 	ErrInvalidWithdrawalDestination    = errors.New("invalid withdrawal destination")
 	ErrWithdrawalPinNotSet             = errors.New("withdrawal pin is not set")
 	ErrInvalidWithdrawalPin            = errors.New("invalid withdrawal pin")

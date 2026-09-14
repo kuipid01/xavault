@@ -25,6 +25,31 @@ func (s *SubscriptionRepository) CreatePendingSubscription(sub *UserSubscription
 	return s.db.Create(sub).Error
 }
 
+// DismissPendingSubscription cancels a subscription payment the user abandoned
+// on dismiss. Only a still-pending row is cancelled; an already-active row is
+// returned untouched so a completed payment is never un-done.
+func (s *SubscriptionRepository) DismissPendingSubscription(userID uuid.UUID, reference string) (*UserSubscription, error) {
+	var sub UserSubscription
+	if err := s.db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("payment_reference = ? AND user_id = ?", reference, userID).
+		First(&sub).Error; err != nil {
+		return nil, err
+	}
+	if sub.Status == SubPending {
+		result := s.db.Model(&UserSubscription{}).
+			Where("id = ? AND status = ?", sub.ID, SubPending).
+			Update("status", SubCanceled)
+		if result.Error != nil {
+			return nil, result.Error
+		}
+		if result.RowsAffected != 1 {
+			return nil, errors.New("subscription dismissal lost concurrent update")
+		}
+		sub.Status = SubCanceled
+	}
+	return &sub, nil
+}
+
 // GetPendingByReference finds a pending subscription by its Paystack transaction reference.
 func (s *SubscriptionRepository) GetPendingByReference(reference string) (*UserSubscription, error) {
 	var sub UserSubscription
@@ -97,11 +122,14 @@ func (s *SubscriptionRepository) ActivateVerifiedTx(
 	if sub.Status == SubActive {
 		return nil
 	}
-	if sub.Status != SubPending {
+	// A dismissed (canceled) payment can still complete: the user may have
+	// gone back and paid after dismissing. Activate it exactly like a pending
+	// row so the webhook never loses a real payment.
+	if sub.Status != SubPending && sub.Status != SubCanceled {
 		return fmt.Errorf("subscription is already final with status %s", sub.Status)
 	}
 	now := time.Now()
-	result := tx.Model(&UserSubscription{}).Where("id = ? AND status = ?", sub.ID, SubPending).Updates(map[string]interface{}{
+	result := tx.Model(&UserSubscription{}).Where("id = ? AND status IN ?", sub.ID, []SubscriptionStatus{SubPending, SubCanceled}).Updates(map[string]interface{}{
 		"status": SubActive, "current_period_start": now, "current_period_end": now.AddDate(0, 1, 0),
 	})
 	if result.Error != nil {

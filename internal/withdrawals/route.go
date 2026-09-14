@@ -13,5 +13,6 @@ func NewWithdrawalRoute(v1 fiber.Router, handler *WithdrawalHandler) {
 	withdrawals.Post("/:planId/request", handler.RequestWithdrawal)
 	withdrawals.Get("/history", handler.GetUserWithdrawals)
 	withdrawals.Get("/:planId/withdrawals", handler.GetPlanWithdrawals)
+	withdrawals.Post("/:withdrawalId/cancel", handler.CancelWithdrawal)
 	withdrawals.Get("/:withdrawalId", handler.GetWithdrawalByID)
 }
