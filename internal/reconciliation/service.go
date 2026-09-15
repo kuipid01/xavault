@@ -199,16 +199,21 @@ func (s *Service) accountingFindings(ctx context.Context, runID string) ([]Findi
 		Actual    int64
 		Entries   int64
 	}
+	// The ledger credit for a successful deposit is the NET amount the wallet
+	// received (WalletCreditAmount), not the gross charge (d.amount includes
+	// the provider fee: e.g. 100000 requested -> 101523 charged -> 100000
+	// credited). Comparing against d.amount flags every fee-charging deposit
+	// as a critical mismatch and halts all money movement.
 	var depositMismatches []moneyMismatch
 	if err := s.db.WithContext(ctx).Raw(`
-		SELECT d.id, d.reference, d.amount AS expected,
+		SELECT d.id, d.reference, d.wallet_credit_amount AS expected,
 		       COALESCE(SUM(l.amount),0) AS actual, COUNT(l.id) AS entries
 		FROM wallet_deposits d
 		LEFT JOIN wallet_ledgers l
 		  ON l.source_id::uuid = d.id AND l.type = 'credit'
 		WHERE d.status = 'success'
-		GROUP BY d.id, d.reference, d.amount
-		HAVING COUNT(l.id) <> 1 OR COALESCE(SUM(l.amount),0) <> d.amount`).
+		GROUP BY d.id, d.reference, d.wallet_credit_amount
+		HAVING COUNT(l.id) <> 1 OR COALESCE(SUM(l.amount),0) <> d.wallet_credit_amount`).
 		Scan(&depositMismatches).Error; err != nil {
 		return nil, err
 	}

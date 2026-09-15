@@ -40,7 +40,10 @@ type WalletDeposit struct {
 	QuoteID            *string   `gorm:"type:uuid" json:"quote_id,omitempty"`
 	GrossAmount        int64     `json:"gross_amount"`
 	WalletCreditAmount int64     `json:"wallet_credit_amount"`
+	// ProviderFee is our rule-based fee estimate; ProviderFeeActual is what
+	// Paystack reported it actually charged (0 = unknown/not reported).
 	ProviderFee        int64     `json:"provider_fee"`
+	ProviderFeeActual  int64     `json:"provider_fee_actual"`
 	PricingVersion     string    `json:"pricing_version"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`

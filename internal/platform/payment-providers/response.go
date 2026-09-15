@@ -13,6 +13,9 @@ type VerifyTransactionData struct {
 	Reference       string     `json:"reference"`
 	Status          string     `json:"status"`
 	Amount          int64      `json:"amount"`
+	// Fees is the fee Paystack actually charged (kobo). Zero on some flows.
+	// Observability only — credit math stays rule-based.
+	Fees            int64      `json:"fees"`
 	Currency        string     `json:"currency"`
 	Domain          string     `json:"domain"`
 	GatewayResponse string     `json:"gateway_response"`

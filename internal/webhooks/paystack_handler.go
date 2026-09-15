@@ -22,14 +22,17 @@ import (
 )
 
 type WebhookHandler struct {
+	db                  *gorm.DB
 	walletService       *wallets.WalletService
 	withdrawalService   *withdrawals.WithdrawalService
 	subscriptionService *subscription.SubscriptionService
 	eventStore          *EventStore
+	alerts              *alerts.Service
 }
 
 func (h *WebhookHandler) SetAlertPublisher(publisher *alerts.Service) {
 	h.eventStore.SetAlertPublisher(publisher)
+	h.alerts = publisher
 }
 
 func NewWebhookHandler(
@@ -39,6 +42,7 @@ func NewWebhookHandler(
 	subscriptionService *subscription.SubscriptionService,
 ) *WebhookHandler {
 	return &WebhookHandler{
+		db:                  db,
 		walletService:       ws,
 		withdrawalService:   withdrawalService,
 		subscriptionService: subscriptionService,
@@ -151,7 +155,6 @@ func (h *WebhookHandler) processClaimedEvent(event *PaystackEvent) error {
 	return nil
 }
 
-// StartRecoveryWorker retries durable webhook events. Stop it by cancelling ctx.
 func (h *WebhookHandler) StartRecoveryWorker(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		interval = time.Minute
@@ -212,6 +215,61 @@ func (h *WebhookHandler) StartRecoveryWorker(ctx context.Context, interval time.
 			}
 		}
 	}()
+}
+
+// Fee variance above this multiple of the expected fee is alerted (1.5x).
+const feeVarianceAlertRatio = 1.5
+
+// recordActualFee stores the fee Paystack reported for a charge on the
+// deposit row (best effort, never fails the webhook) and alerts when it
+// materially exceeds our rule-based estimate — e.g. international cards
+// charged a higher percentage than the local rule assumes.
+func (h *WebhookHandler) recordActualFee(tx *gorm.DB, reference string, actualFee int64) {
+	if actualFee <= 0 {
+		return
+	}
+	db := tx
+	if db == nil {
+		db = h.db // legacy non-transactional path
+	}
+	if db == nil {
+		return
+	}
+	repo := wallets.NewWalletRepository(db)
+	// The deposit row is already locked inside the credit transaction when tx
+	// is non-nil; this read only feeds the first-write-wins guard and the
+	// variance comparison.
+	deposit, err := repo.GetDepositByReference(reference)
+	if err != nil || deposit == nil {
+		log.Printf("[PAYSTACK_WEBHOOK][FEE_CAPTURE_SKIPPED] reference=%s error=%v", reference, err)
+		return
+	}
+	if deposit.ProviderFeeActual == 0 { // first write wins, redelivery-safe
+		if err := repo.UpdateDepositProviderFeeActual(reference, actualFee); err != nil {
+			log.Printf("[PAYSTACK_WEBHOOK][FEE_CAPTURE_FAILED] reference=%s error=%v", reference, err)
+			return
+		}
+		log.Printf("[PAYSTACK_WEBHOOK][FEE_CAPTURED] reference=%s expected_fee=%d actual_fee=%d", reference, deposit.ProviderFee, actualFee)
+	}
+	if actualFee > int64(float64(deposit.ProviderFee)*feeVarianceAlertRatio) {
+		log.Printf(`{"level":"warn","event":"deposit_fee_variance","reference":%q,"expected_fee":%d,"actual_fee":%d}`, reference, deposit.ProviderFee, actualFee)
+		if h.alerts != nil {
+			if err := h.alerts.Publish(context.Background(), alerts.Input{
+				Severity:    alerts.SeverityWarning,
+				EventType:   "deposit_fee_variance",
+				Title:       "Deposit fee variance detected",
+				Message:     fmt.Sprintf("Provider fee %d exceeded expected fee %d for reference %s", actualFee, deposit.ProviderFee, reference),
+				Fingerprint: "fee-variance:" + reference,
+				Metadata: map[string]interface{}{
+					"reference":    reference,
+					"expected_fee": deposit.ProviderFee,
+					"actual_fee":   actualFee,
+				},
+			}); err != nil {
+				log.Printf("[PAYSTACK_WEBHOOK][FEE_VARIANCE_ALERT_FAILED] reference=%s error=%v", reference, err)
+			}
+		}
+	}
 }
 
 func (h *WebhookHandler) ReplayStoredEvent(c *fiber.Ctx) error {
@@ -361,6 +419,7 @@ func (h *WebhookHandler) extractAndProcessEvent(tx *gorm.DB, bodyText string) er
 					return fmt.Errorf("failed to credit dedicated account deposit: %v", result.Error)
 				}
 			}
+			h.recordActualFee(tx, chargeData.Reference, chargeData.Fees)
 		} else {
 			if tx != nil {
 				if _, err := h.walletService.CreditWalletWithTx(tx, chargeData.Reference, chargeData.Amount); err != nil {
@@ -372,6 +431,7 @@ func (h *WebhookHandler) extractAndProcessEvent(tx *gorm.DB, bodyText string) er
 					return fmt.Errorf("failed to credit wallet deposit: %v", result.Error)
 				}
 			}
+			h.recordActualFee(tx, chargeData.Reference, chargeData.Fees)
 		}
 
 	case "transfer.success":

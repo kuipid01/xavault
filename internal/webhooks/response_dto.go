@@ -14,7 +14,11 @@ type ChargeSuccessData struct {
 	Reference string `json:"reference"`
 	Status    string `json:"status"`
 	Currency  string `json:"currency"`
-	Customer  struct {
+	// Fees is the fee Paystack actually charged for this transaction (kobo).
+	// Absent/zero on some flows (e.g. dedicated-account transfers); only used
+	// for observability — the wallet credit is always rule-based.
+	Fees     int64 `json:"fees"`
+	Customer struct {
 		Email string `json:"email"`
 	} `json:"customer"`
 	DedicatedAccount struct {

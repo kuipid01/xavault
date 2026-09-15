@@ -134,6 +134,15 @@ func (repo *WalletRepository) UpdateDepositStatus(reference string, status strin
 	return &deposit, nil
 }
 
+// UpdateDepositProviderFeeActual stores the fee the provider reported for a
+// charge on the deposit row. It only touches that one column so it can never
+// clobber a concurrent status flip.
+func (repo *WalletRepository) UpdateDepositProviderFeeActual(reference string, fee int64) error {
+	return repo.db.Model(&WalletDeposit{}).
+		Where("reference = ?", reference).
+		Update("provider_fee_actual", fee).Error
+}
+
 func (rep *WalletRepository) ExecuteInTransaction(fn func(txRepo *WalletRepository) error) error {
 	return rep.db.Transaction(func(tx *gorm.DB) error {
 		return fn(&WalletRepository{db: tx})

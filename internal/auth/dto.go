@@ -61,7 +61,12 @@ type UpdateProfileRequest struct {
 	UserID      string `json:"user_id" validate:"required"`
 	Nickname    string `json:"nickname"`
 	DateOfBirth string `json:"date_of_birth"`
+	Gender      string `json:"gender"`
 	Address     string `json:"address"`
+	// Phone and country are optional; when either is supplied both are
+	// re-validated together so stored numbers stay canonical.
+	PhoneNumber string `json:"phone_number"`
+	Country     string `json:"country"`
 }
 
 type CheckNicknameRequest struct {

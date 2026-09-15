@@ -3,6 +3,7 @@ package auth
 import (
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -277,12 +278,18 @@ func (s *AuthService) StartRegistration(req StartRegistrationRequest) *response.
 			Error:   err.Error(),
 		}
 	}
+	var devOtp string
 
+	if os.Getenv("APP_ENV") == "development" {
+		devOtp = otp
+		fmt.Println(devOtp, "DEVOTP")
+	}
 	return &response.APIResponse{
 		Success: true,
 		Message: "Verification OTP sent",
 		Data: fiber.Map{
-			"email": email,
+			"email":  email,
+			"DevOtp": devOtp,
 		},
 	}
 }
@@ -693,6 +700,7 @@ func (s *AuthService) Me(req MeRequest) *response.APIResponse {
 			"last_name":          user.LastName,
 			"nickname":           user.Nickname,
 			"date_of_birth":      user.DateOfBirth,
+			"gender":             user.Gender,
 			"address":            user.Address,
 			"profile_image_url":  user.ProfileImageURL,
 			"mail_verified":      user.MailVerified,
@@ -736,6 +744,39 @@ func (s *AuthService) UpdateProfile(req UpdateProfileRequest) *response.APIRespo
 			return &response.APIResponse{Success: false, Message: "Date of birth must be YYYY-MM-DD", Error: "invalid_date_of_birth"}
 		}
 		updates["date_of_birth"] = dob
+	}
+
+	// Gender is stored as the raw client string ("Male"/"Female"/...),
+	// matching what registration saves.
+	if strings.TrimSpace(req.Gender) != "" {
+		gender := strings.TrimSpace(req.Gender)
+		updates["gender"] = gender
+	}
+
+	// Phone and country are validated and stored as a pair so the number
+	// always matches the country's canonical format (same rules as
+	// registration). Changing only one at a time is rejected to avoid
+	// mixing a number from one country with another country's code.
+	reqPhone := strings.TrimSpace(req.PhoneNumber)
+	reqCountry := strings.TrimSpace(req.Country)
+	if reqPhone != "" || reqCountry != "" {
+		effectiveCountry := reqCountry
+		if effectiveCountry == "" {
+			effectiveCountry = user.Country
+		}
+		effectivePhone := reqPhone
+		if effectivePhone == "" {
+			effectivePhone = user.PhoneNumber
+		}
+		if effectivePhone == "" || effectiveCountry == "" {
+			return &response.APIResponse{Success: false, Message: "Phone number and country must be provided together", Error: "phone_country_required"}
+		}
+		phone, country, phoneErr := normalizePhoneForCountry(effectiveCountry, effectivePhone)
+		if phoneErr != "" {
+			return &response.APIResponse{Success: false, Message: phoneErr, Error: "invalid_phone_number"}
+		}
+		updates["phone_number"] = phone
+		updates["country"] = country
 	}
 
 	if strings.TrimSpace(req.Address) != "" {

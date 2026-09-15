@@ -864,6 +864,17 @@ func (s *WalletService) VerifyDeposit(ctx context.Context, userID, reference str
 		}
 	}
 
+	// Capture the fee the provider actually reported so the rule-based fee
+	// can be audited later. Best effort: never blocks verification. First
+	// write wins, so a webhook redelivery cannot overwrite it.
+	if fees := verificationResult.Data.Fees; fees > 0 {
+		if err := s.repo.UpdateDepositProviderFeeActual(reference, fees); err != nil {
+			log.Printf("[WALLET][FEE_CAPTURE_FAILED] reference=%s error=%v", reference, err)
+		} else if deposit.ProviderFee > 0 && fees > deposit.ProviderFee*3/2 {
+			log.Printf(`{"level":"warn","event":"deposit_fee_variance","source":"verify","reference":%q,"expected_fee":%d,"actual_fee":%d}`, reference, deposit.ProviderFee, fees)
+		}
+	}
+
 	creditResult := s.CreditWallet(reference, amount)
 	if creditResult.Error != nil {
 		if creditResult.Error == "deposit_already_processed" {
