@@ -34,4 +34,5 @@ type TransferEventData struct {
 	Reason       string `json:"reason"`
 	TransferCode string `json:"transfer_code"`
 	Amount       int64  `json:"amount"`
+	Currency     string `json:"currency"`
 }

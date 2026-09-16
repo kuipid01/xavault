@@ -2,6 +2,8 @@ package withdrawals
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -232,6 +234,7 @@ func (s *WithdrawalService) RequestWithdrawal(
 			Error:   err.Error(),
 		}
 	}
+	requestHash := hashWithdrawalRequest(planID, req, recipientCode)
 
 	// Data flow:
 	// 1. The idempotency manager wraps the whole withdrawal request.
@@ -414,22 +417,26 @@ func (s *WithdrawalService) RequestWithdrawal(
 
 			paystackResp, err := s.payment.InitiateTransfer(ctx, paystackReq)
 			if err != nil {
-				// Data flow:
-				// Paystack initiation failed.
-				// No wallet balance was moved locally, so only mark the request failed.
-				reversalErr := s.markFailedWithdrawalInitiation(
-					createdWithdrawal.ID,
-					fmt.Sprintf("Paystack transfer initiation failed: %v", err),
-				)
-				if reversalErr != nil {
-					return http.StatusInternalServerError, nil, fmt.Errorf(
-						"paystack failed: %w; reversal also failed: %v",
-						err,
-						reversalErr,
-					)
-				}
-
-				return http.StatusBadRequest, nil, err
+				// The provider may have accepted the transfer before the network
+				// error reached us. Keep the original reference pending so
+				// reconciliation can verify it and new keys cannot create another.
+				return http.StatusAccepted, map[string]interface{}{
+					"message":    "Withdrawal request is pending provider confirmation",
+					"withdrawal": mapWithdrawalToResponse(createdWithdrawal),
+					"wallet": WalletSnapshotDTO{
+						WalletID:         updatedWallet.ID,
+						AvailableBalance: updatedWallet.AvailableBalance,
+						LockedBalance:    updatedWallet.LockedBalance,
+						LedgerBalance:    updatedWallet.LedgerBalance,
+						Currency:         updatedWallet.Currency,
+					},
+					"note": "Provider confirmation will be resolved by webhook or reconciliation",
+				}, nil
+			}
+			if strings.TrimSpace(paystackResp.Data.TransferCode) == "" ||
+				paystackResp.Data.Amount != amountForPaystack ||
+				!strings.EqualFold(paystackResp.Data.Currency, planCurrency) {
+				return http.StatusInternalServerError, nil, errors.New("provider returned incomplete or mismatched transfer details")
 			}
 
 			// Data flow:
@@ -466,6 +473,7 @@ func (s *WithdrawalService) RequestWithdrawal(
 				"note":     "Final withdrawal success will be confirmed by Paystack webhook",
 			}, nil
 		},
+		requestHash,
 	)
 
 	if err != nil {
@@ -551,9 +559,15 @@ func (s *WithdrawalService) markFailedWithdrawalInitiation(
 	reason string,
 ) error {
 	return s.repo.WithTransaction(func(tx *gorm.DB) error {
-		var withdrawal Withdrawal
-		if err := tx.Where("id=?", withdrawalID).First(&withdrawal).Error; err != nil {
+		withdrawal, err := s.repo.FindByIDForUpdate(tx, withdrawalID)
+		if err != nil {
 			return err
+		}
+		if withdrawal == nil {
+			return gorm.ErrRecordNotFound
+		}
+		if withdrawal.Status != WithdrawalStatusPending {
+			return nil
 		}
 		if withdrawal.AllowanceApplied && withdrawal.AllowanceState == "reserved" {
 			if err := s.subRepo.ReleaseFreeWithdrawalTx(tx, uuid.MustParse(withdrawal.UserID), withdrawal.AllowancePeriod, false); err != nil {
@@ -716,6 +730,14 @@ func (s *WithdrawalService) GetWithdrawalByID(
 }
 
 func (s *WithdrawalService) CompleteProviderWithdrawal(reference string, providerStatus string) *response.APIResponse {
+	return s.completeProviderWithdrawal(reference, providerStatus, 0, "", "", false)
+}
+
+func (s *WithdrawalService) CompleteProviderWithdrawalWithDetails(reference string, providerStatus string, providerAmount int64, providerCurrency, providerTransferCode string) *response.APIResponse {
+	return s.completeProviderWithdrawal(reference, providerStatus, providerAmount, providerCurrency, providerTransferCode, true)
+}
+
+func (s *WithdrawalService) completeProviderWithdrawal(reference string, providerStatus string, providerAmount int64, providerCurrency, providerTransferCode string, validateProviderDetails bool) *response.APIResponse {
 	reference = strings.TrimSpace(reference)
 	if reference == "" {
 		return &response.APIResponse{
@@ -726,7 +748,7 @@ func (s *WithdrawalService) CompleteProviderWithdrawal(reference string, provide
 	}
 
 	err := s.repo.WithTransaction(func(tx *gorm.DB) error {
-		return s.CompleteProviderWithdrawalTx(tx, reference, providerStatus)
+		return s.completeProviderWithdrawalTx(tx, reference, providerStatus, providerAmount, providerCurrency, providerTransferCode, validateProviderDetails)
 	})
 
 	if err != nil {
@@ -740,6 +762,14 @@ func (s *WithdrawalService) CompleteProviderWithdrawal(reference string, provide
 }
 
 func (s *WithdrawalService) CompleteProviderWithdrawalTx(tx *gorm.DB, reference, providerStatus string) error {
+	return s.completeProviderWithdrawalTx(tx, reference, providerStatus, 0, "", "", false)
+}
+
+func (s *WithdrawalService) CompleteProviderWithdrawalTxWithDetails(tx *gorm.DB, reference, providerStatus string, providerAmount int64, providerCurrency, providerTransferCode string) error {
+	return s.completeProviderWithdrawalTx(tx, reference, providerStatus, providerAmount, providerCurrency, providerTransferCode, true)
+}
+
+func (s *WithdrawalService) completeProviderWithdrawalTx(tx *gorm.DB, reference, providerStatus string, providerAmount int64, providerCurrency, providerTransferCode string, validateProviderDetails bool) error {
 	withdrawal, err := s.repo.FindByReferenceForUpdate(tx, strings.TrimSpace(reference))
 	if err != nil {
 		return err
@@ -757,6 +787,24 @@ func (s *WithdrawalService) CompleteProviderWithdrawalTx(tx *gorm.DB, reference,
 	// terminal: it was already refunded.
 	if withdrawal.Status == WithdrawalStatusReversed {
 		return fmt.Errorf("withdrawal is already final with status %s", withdrawal.Status)
+	}
+	if validateProviderDetails && providerAmount <= 0 {
+		return errors.New("provider amount is missing")
+	}
+	if validateProviderDetails && providerAmount != withdrawal.RecipientAmount {
+		return fmt.Errorf("provider amount %d does not match withdrawal amount %d", providerAmount, withdrawal.RecipientAmount)
+	}
+	if validateProviderDetails && strings.TrimSpace(providerCurrency) == "" {
+		return errors.New("provider currency is missing")
+	}
+	if validateProviderDetails && !strings.EqualFold(providerCurrency, withdrawal.Currency) {
+		return fmt.Errorf("provider currency %q does not match withdrawal currency %q", providerCurrency, withdrawal.Currency)
+	}
+	if validateProviderDetails && strings.TrimSpace(providerTransferCode) == "" {
+		return errors.New("provider transfer code is missing")
+	}
+	if validateProviderDetails && withdrawal.ProviderTransferCode != "" && providerTransferCode != withdrawal.ProviderTransferCode {
+		return fmt.Errorf("provider transfer code does not match withdrawal")
 	}
 	totalDeduction := withdrawal.TotalDeduction
 	if totalDeduction <= 0 {
@@ -1354,6 +1402,22 @@ func sameOptionalString(left, right *string) bool {
 		rightValue = strings.TrimSpace(*right)
 	}
 	return leftValue == rightValue
+}
+
+func hashWithdrawalRequest(planID string, req RequestWithdrawalRequest, recipientCode string) string {
+	payload, _ := json.Marshal(struct {
+		PlanID          string  `json:"plan_id"`
+		QuoteID         string  `json:"quote_id"`
+		SourceType      string  `json:"source_type"`
+		EnvelopeID      *string `json:"envelope_id"`
+		Amount          int64   `json:"amount"`
+		Reason          string  `json:"reason"`
+		DestinationType string  `json:"destination_type"`
+		DestinationID   string  `json:"destination_id"`
+		RecipientCode   string  `json:"recipient_code"`
+	}{planID, req.QuoteID, req.SourceType, req.EnvelopeID, req.Amount, req.Reason, req.DestinationType, req.DestinationID, recipientCode})
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:])
 }
 
 func buildWithdrawalDescription(sourceType string, envelopeID *string) string {

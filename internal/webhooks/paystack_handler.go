@@ -446,11 +446,11 @@ func (h *WebhookHandler) extractAndProcessEvent(tx *gorm.DB, bodyText string) er
 		)
 
 		if tx != nil {
-			if err := h.withdrawalService.CompleteProviderWithdrawalTx(tx, transferData.Reference, transferData.Status); err != nil {
+			if err := h.withdrawalService.CompleteProviderWithdrawalTxWithDetails(tx, transferData.Reference, transferData.Status, transferData.Amount, transferData.Currency, transferData.TransferCode); err != nil {
 				return fmt.Errorf("failed to complete withdrawal: %w", err)
 			}
 		} else {
-			result := h.withdrawalService.CompleteProviderWithdrawal(transferData.Reference, transferData.Status)
+			result := h.withdrawalService.CompleteProviderWithdrawalWithDetails(transferData.Reference, transferData.Status, transferData.Amount, transferData.Currency, transferData.TransferCode)
 			if result.Error != nil {
 				return fmt.Errorf("failed to complete withdrawal: %v", result.Error)
 			}

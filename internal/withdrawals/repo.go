@@ -314,7 +314,7 @@ func (r *WithdrawalRepository) MarkFailedWithTx(
 	}
 
 	return tx.Model(&Withdrawal{}).
-		Where("id = ?", withdrawalID).
+		Where("id = ? AND status IN ?", withdrawalID, []string{WithdrawalStatusPending, WithdrawalStatusProcessing}).
 		Updates(map[string]interface{}{
 			"status":          WithdrawalStatusFailed,
 			"provider_status": "failed",

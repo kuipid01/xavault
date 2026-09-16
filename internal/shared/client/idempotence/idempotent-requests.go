@@ -22,17 +22,25 @@ func (r *IdempotentRequest) HandleIdempotentRequest(
 	key string,
 	userID string,
 	executeLogic func() (int, interface{}, error),
+	requestHash ...string,
 ) (int, interface{}, error) {
 	if r.EnableLog {
 		log.Printf("[Idempotency] HandleIdempotentRequest initiated: key=%s, userID=%s", key, userID)
 	}
 
 	now := time.Now()
+	leaseUntil := now.Add(5 * time.Minute)
+	fingerprint := ""
+	if len(requestHash) > 0 {
+		fingerprint = requestHash[0]
+	}
 	idempotentDTO := &IdempotentKey{
-		Key:       key,
-		UserId:    userID,
-		State:     "IN_FLIGHT",
-		CreatedAt: now,
+		Key:         key,
+		UserId:      userID,
+		State:       "IN_FLIGHT",
+		RequestHash: fingerprint,
+		CreatedAt:   now,
+		LockedUntil: &leaseUntil,
 	}
 
 	// 1. Attempt atomic insertion
@@ -49,6 +57,12 @@ func (r *IdempotentRequest) HandleIdempotentRequest(
 			}
 			return http.StatusInternalServerError, map[string]string{"error": "Failed to resolve request status"}, findErr
 		}
+		if existingRecord.UserId != userID {
+			return http.StatusConflict, map[string]string{"error": "Idempotency key belongs to another user"}, nil
+		}
+		if fingerprint != "" && existingRecord.RequestHash != "" && existingRecord.RequestHash != fingerprint {
+			return http.StatusConflict, map[string]string{"error": "Idempotency key was reused with different request parameters"}, nil
+		}
 
 		if r.EnableLog {
 			log.Printf("[Idempotency] Existing record found for key=%s, State=%s", key, existingRecord.State)
@@ -56,7 +70,14 @@ func (r *IdempotentRequest) HandleIdempotentRequest(
 
 		// Scenario A: Request is currently running
 		if existingRecord.State == "IN_FLIGHT" {
-			return http.StatusConflict, map[string]string{"error": "An identical transaction is already processing"}, nil
+			claimed, claimErr := r.repo.ClaimExpired(key, userID, now, leaseUntil)
+			if claimErr != nil {
+				return http.StatusInternalServerError, map[string]string{"error": "Failed to resolve request status"}, claimErr
+			}
+			if !claimed {
+				return http.StatusConflict, map[string]string{"error": "An identical transaction is already processing"}, nil
+			}
+			record = existingRecord
 		}
 
 		// Scenario B: Request completed successfully on a previous try
@@ -78,6 +99,10 @@ func (r *IdempotentRequest) HandleIdempotentRequest(
 
 		// Scenario C: Request failed previously. Flip back to IN_FLIGHT and retry logic execution.
 		existingRecord.State = "IN_FLIGHT"
+		existingRecord.LockedUntil = &leaseUntil
+		if fingerprint != "" {
+			existingRecord.RequestHash = fingerprint
+		}
 		if updateErr := r.repo.Update(existingRecord); updateErr != nil {
 			if r.EnableLog {
 				log.Printf("[Idempotency] Failed to update state to IN_FLIGHT for key=%s: %v", key, updateErr)
@@ -102,6 +127,7 @@ func (r *IdempotentRequest) HandleIdempotentRequest(
 		}
 		// Logic failed! Mark state as FAILED so client can safely retry with the same key
 		record.State = "FAILED"
+		record.LockedUntil = nil
 		_ = r.repo.Update(record)
 		return code, payload, err
 	}
@@ -117,6 +143,7 @@ func (r *IdempotentRequest) HandleIdempotentRequest(
 	}
 	record.ResponseCode = &code
 	record.State = "SUCCESS"
+	record.LockedUntil = nil
 
 	if updateErr := r.repo.Update(record); updateErr != nil {
 		if r.EnableLog {

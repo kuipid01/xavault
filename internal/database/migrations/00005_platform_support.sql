@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS idempotent_keys (
 );
 CREATE INDEX IF NOT EXISTS idx_idempotent_keys_user_id ON idempotent_keys(user_id);
 CREATE INDEX IF NOT EXISTS idx_idempotent_keys_created_at ON idempotent_keys(created_at);
+ALTER TABLE idempotent_keys ADD COLUMN IF NOT EXISTS request_hash text;
 
 CREATE TABLE IF NOT EXISTS entries (
     id uuid PRIMARY KEY,

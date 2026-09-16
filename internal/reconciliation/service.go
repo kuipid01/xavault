@@ -339,7 +339,7 @@ func (s *Service) ReconcileStuck(ctx context.Context) error {
 		data := verify.Data
 		switch strings.ToLower(data.Status) {
 		case "success":
-			result := s.withdrawals.CompleteProviderWithdrawal(reference, data.Status)
+			result := s.withdrawals.CompleteProviderWithdrawalWithDetails(reference, data.Status, data.Amount, data.Currency, data.TransferCode)
 			if result.Error != nil {
 				log.Printf(`{"level":"error","event":"withdrawal_reconcile_failed","reference":%q}`, reference)
 			}

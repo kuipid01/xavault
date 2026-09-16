@@ -8,6 +8,7 @@ type IdempotentKey struct {
 	State        string     `json:"state"`
 	ResponseCode *int       `json:"response_code"`
 	ResponseBody *string    `json:"response_body"`
+	RequestHash  string     `json:"request_hash"`
 	CreatedAt    time.Time  `json:"created_at"`
 	LockedUntil  *time.Time `json:"locked_until"`
 }
