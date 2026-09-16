@@ -35,7 +35,11 @@ type DepositBody struct {
 	Currency    string                 `json:"currency" validate:"required"`
 	Reference   string                 `json:"reference" validate:"required"`
 	CallbackURL string                 `json:"callback_url" validate:"required,url"`
-	Metadata    map[string]interface{} `json:"metadata,omitempty"`
+	// CancelAction is Paystack's top-level cancel_action param: the URL the
+	// customer is redirected to when they cancel on the checkout page. It
+	// must be top-level - Paystack ignores cancel_action inside metadata.
+	CancelAction string                  `json:"cancel_action,omitempty"`
+	Metadata     map[string]interface{}  `json:"metadata,omitempty"`
 }
 
 type PaystackBank struct {

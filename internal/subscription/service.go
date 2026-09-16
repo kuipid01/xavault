@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -68,12 +69,24 @@ func (s *SubscriptionService) CreateSubscription(
 	// 2. Build a unique Paystack reference
 	reference := fmt.Sprintf("SUB_%s_%s_%d", userID, plan.ID, time.Now().UnixMilli())
 
-	// 3. Initiate deposit with Paystack, embedding subscription metadata
+	// 3. Initiate deposit with Paystack, embedding subscription metadata.
+	// The callback URL matches the deposit flow so the in-app checkout can
+	// detect the redirect and verify immediately after payment. cancel_action
+	// mirrors it with a marker so a customer-initiated cancel is distinguishable
+	// from a paid redirect (same scheme as the deposit flow).
+	callbackURL := fmt.Sprintf("%s/dashboard/wallet/deposit/callback", os.Getenv("APP_LOCAL_URL"))
+	if os.Getenv("APP_ENV") == "production" {
+		callbackURL = fmt.Sprintf("%s/dashboard/wallet/deposit/callback", os.Getenv("APP_URL"))
+	}
 	depositBody := &paymentproviders.DepositBody{
-		Amount:    plan.PriceKobo,
-		Email:     userEmail,
-		Currency:  plan.Currency,
-		Reference: reference,
+		Amount:       plan.PriceKobo,
+		Email:        userEmail,
+		Currency:     plan.Currency,
+		Reference:    reference,
+		CallbackURL:  callbackURL,
+		// Top-level cancel_action so the in-app checkout WebView can detect a
+		// customer cancel and return to the upgrade prompt instead of dangling.
+		CancelAction: callbackURL + "?status=cancelled",
 		Metadata: map[string]interface{}{
 			"is_subscription": true,
 			"plan_id":         plan.ID.String(),

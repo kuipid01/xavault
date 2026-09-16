@@ -240,21 +240,16 @@ func (s *WalletService) InitiateDeposit(
 			callback_url = fmt.Sprintf("%s/dashboard/wallet/deposit/callback", os.Getenv("APP_URL"))
 		}
 
-		// cancel_action lets the in-app checkout WebView intercept the
-		// customer pressing "cancel" on the Paystack page (window.close()
-		// does not work in a WebView). It mirrors the callback URL with a
-		// marker the app recognises as a cancellation rather than a payment.
-		metadata := map[string]interface{}{
-			"cancel_action": callback_url + "?status=cancelled",
-		}
-
 		reqBody := &paymentproviders.DepositBody{
-			Amount:      quote.GrossCharge,
-			Currency:    "NGN",
-			Email:       email,
-			Reference:   reference,
-			CallbackURL: callback_url,
-			Metadata:    metadata,
+			Amount:       quote.GrossCharge,
+			Currency:     "NGN",
+			Email:        email,
+			Reference:    reference,
+			CallbackURL:  callback_url,
+			// Top-level Paystack param (metadata.cancel_action is ignored by
+			// Paystack) so the in-app checkout can intercept a customer cancel.
+			CancelAction: callback_url + "?status=cancelled",
+			Metadata:     nil,
 		}
 
 		// Hit Paystack
