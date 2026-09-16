@@ -32,6 +32,20 @@ func feeFor(rule FeeRule, amount int64) int64 {
 	return fee
 }
 
+func withdrawalAmounts(principal, providerFee, levy int64, allowance bool) (userFee, subsidy, totalDeduction, recipientAmount int64, err error) {
+	external := providerFee + levy
+	userFee = external
+	if allowance {
+		userFee = 0
+		subsidy = external
+	}
+	recipientAmount = principal - userFee
+	if recipientAmount <= 0 {
+		return 0, 0, 0, 0, errors.New("withdrawal amount must exceed applicable fees")
+	}
+	return userFee, subsidy, principal, recipientAmount, nil
+}
+
 func (s *Service) rule(operation, channel string, amount int64) (*FeeRule, error) {
 	now := time.Now()
 	var rule FeeRule
@@ -85,14 +99,11 @@ func (s *Service) CreateWithdrawalQuote(userID string, principal int64, allowanc
 	if rule.GovernmentLevyThresholdKobo != nil && principal >= *rule.GovernmentLevyThresholdKobo {
 		levy = rule.GovernmentLevyKobo
 	}
-	external := providerFee + levy
-	userFee := external
-	subsidy := int64(0)
-	if allowance {
-		userFee = 0
-		subsidy = external
+	userFee, subsidy, totalDeduction, recipientAmount, err := withdrawalAmounts(principal, providerFee, levy, allowance)
+	if err != nil {
+		return nil, err
 	}
-	q := &Quote{ID: uuid.NewString(), UserID: userID, Operation: OperationWithdrawal, Provider: "paystack", Channel: channel, Currency: "NGN", PrincipalAmount: principal, ProviderFee: providerFee, GovernmentLevy: levy, XavaultSubsidy: subsidy, UserFee: userFee, GrossCharge: principal, NetCredit: principal, TotalDeduction: principal + userFee, RecipientAmount: principal, AllowanceApplied: allowance, PricingVersion: rule.Version, Status: StatusActive, ContextJSON: contextJSON, ExpiresAt: time.Now().Add(15 * time.Minute), CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	q := &Quote{ID: uuid.NewString(), UserID: userID, Operation: OperationWithdrawal, Provider: "paystack", Channel: channel, Currency: "NGN", PrincipalAmount: principal, ProviderFee: providerFee, GovernmentLevy: levy, XavaultSubsidy: subsidy, UserFee: userFee, GrossCharge: principal, NetCredit: recipientAmount, TotalDeduction: totalDeduction, RecipientAmount: recipientAmount, AllowanceApplied: allowance, PricingVersion: rule.Version, Status: StatusActive, ContextJSON: contextJSON, ExpiresAt: time.Now().Add(15 * time.Minute), CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	return q, s.db.Create(q).Error
 }
 

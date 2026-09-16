@@ -158,7 +158,7 @@ func (s *WithdrawalService) PreviewWithdrawal(
 	preview.ExpiresAt = quote.ExpiresAt.Format(time.RFC3339)
 	if quote.TotalDeduction > preview.WithdrawableBalance {
 		preview.CanWithdraw = false
-		preview.ValidationErrors = append(preview.ValidationErrors, "Insufficient balance for withdrawal and provider charges")
+		preview.ValidationErrors = append(preview.ValidationErrors, "Insufficient balance for withdrawal amount")
 	}
 	preview.RemainingBalance = preview.WithdrawableBalance - quote.TotalDeduction
 	if preview.RemainingBalance < 0 {

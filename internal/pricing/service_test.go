@@ -1,6 +1,9 @@
 package pricing
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestPricingTableNamesMatchVersionedMigration(t *testing.T) {
 	if got := (FeeRule{}).TableName(); got != "provider_fee_rules" {
@@ -23,5 +26,32 @@ func TestFeeBoundaries(t *testing.T) {
 	}
 	if got := feeFor(r, 20_000_000); got != 200000 {
 		t.Fatalf("cap fee=%d", got)
+	}
+}
+
+func TestWithdrawalAmountsDeductFeesFromRequestedAmount(t *testing.T) {
+	userFee, subsidy, totalDeduction, recipientAmount, err := withdrawalAmounts(1_000_000, 2_500, 5_000, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if userFee != 7_500 || subsidy != 0 || totalDeduction != 1_000_000 || recipientAmount != 992_500 {
+		t.Fatalf("got userFee=%d subsidy=%d totalDeduction=%d recipientAmount=%d", userFee, subsidy, totalDeduction, recipientAmount)
+	}
+}
+
+func TestWithdrawalAmountsSubsidyPreservesRecipientAmount(t *testing.T) {
+	userFee, subsidy, totalDeduction, recipientAmount, err := withdrawalAmounts(1_000_000, 2_500, 5_000, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if userFee != 0 || subsidy != 7_500 || totalDeduction != 1_000_000 || recipientAmount != 1_000_000 {
+		t.Fatalf("got userFee=%d subsidy=%d totalDeduction=%d recipientAmount=%d", userFee, subsidy, totalDeduction, recipientAmount)
+	}
+}
+
+func TestWithdrawalAmountsRejectFeesThatConsumeAmount(t *testing.T) {
+	_, _, _, _, err := withdrawalAmounts(1_000, 600, 400, false)
+	if err == nil || !strings.Contains(err.Error(), "must exceed applicable fees") {
+		t.Fatalf("expected fee validation error, got %v", err)
 	}
 }
