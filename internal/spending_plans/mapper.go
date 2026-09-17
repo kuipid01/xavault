@@ -6,10 +6,16 @@ import (
 	"github.com/kuipid01/salary-vault/internal/funds"
 )
 
-func mapPlanToResponse(plan *SpendingPlan, topLevelAllocated int64, totals funds.WithdrawalTotals) PlanResponse {
+// mapPlanToResponse builds the plan API response. unboxedTotals feeds the
+// plan_unboxed_balance math (only plan_unboxed withdrawals), while allTotals
+// carries every withdrawal against the plan (envelope + plan_unboxed) so the
+// client can show how much of the plan has been paid out overall.
+func mapPlanToResponse(plan *SpendingPlan, topLevelAllocated int64, unboxedTotals funds.WithdrawalTotals, allTotals funds.WithdrawalTotals) PlanResponse {
 	if plan == nil {
 		return PlanResponse{}
 	}
+
+	remainingBalance := max(plan.Amount-allTotals.Committed(), 0)
 
 	return PlanResponse{
 		ID:                      plan.ID,
@@ -23,9 +29,11 @@ func mapPlanToResponse(plan *SpendingPlan, topLevelAllocated int64, totals funds
 		StartDate:               formatDate(plan.StartDate),
 		EndDate:                 formatDate(plan.EndDate),
 		TopLevelAllocated:       topLevelAllocated,
-		PlanUnboxedBalance:      funds.AvailableBalance(plan.Amount, topLevelAllocated, totals),
-		WithdrawnAmount:         totals.Paid,
-		PendingWithdrawalAmount: totals.Pending,
+		PlanUnboxedBalance:      funds.AvailableBalance(plan.Amount, topLevelAllocated, unboxedTotals),
+		WithdrawnAmount:         allTotals.Paid,
+		PendingWithdrawalAmount: allTotals.Pending,
+		RemainingBalance:        remainingBalance,
+		IsExhausted:             remainingBalance <= 0,
 		ConfirmedAt:             formatOptionalTime(plan.ConfirmedAt),
 		CreatedAt:               formatTime(plan.CreatedAt),
 		UpdatedAt:               formatTime(plan.UpdatedAt),
@@ -36,7 +44,7 @@ func mapPlansToResponse(plans []SpendingPlan) []PlanResponse {
 	responses := make([]PlanResponse, 0, len(plans))
 
 	for _, plan := range plans {
-		responses = append(responses, mapPlanToResponse(&plan, 0, funds.WithdrawalTotals{}))
+		responses = append(responses, mapPlanToResponse(&plan, 0, funds.WithdrawalTotals{}, funds.WithdrawalTotals{}))
 	}
 
 	return responses

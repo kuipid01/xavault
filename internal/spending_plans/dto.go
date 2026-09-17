@@ -46,6 +46,8 @@ type PlanResponse struct {
 	PlanUnboxedBalance      int64   `json:"plan_unboxed_balance"`
 	WithdrawnAmount         int64   `json:"withdrawn_amount"`
 	PendingWithdrawalAmount int64   `json:"pending_withdrawal_amount"`
+	RemainingBalance        int64   `json:"remaining_balance"`
+	IsExhausted             bool    `json:"is_exhausted"`
 	ConfirmedAt             *string `json:"confirmed_at"`
 	CreatedAt               string  `json:"created_at"`
 	UpdatedAt               string  `json:"updated_at"`

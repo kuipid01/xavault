@@ -119,12 +119,23 @@ func (s *EnvelopeService) CreateEnvelope(userID string, planID string, req Creat
 				return ErrEnvelopeInvalidDateRange
 			}
 
+			// Money already withdrawn (paid or in-flight) has permanently
+			// left the plan, so it no longer backs new envelope allocations.
+			withdrawalTotals, err := s.fundsRepo.PlanTotals(tx, planID, userID)
+			if err != nil {
+				return err
+			}
+			allocatable := plan.Amount - withdrawalTotals.Committed()
+			if allocatable < 0 {
+				allocatable = 0
+			}
+
 			currentTopLevelTotal, err := s.repo.SumTopLevelEnvelopeAmountTx(tx, planID)
 			if err != nil {
 				return err
 			}
 
-			if currentTopLevelTotal+req.Amount > plan.Amount {
+			if currentTopLevelTotal+req.Amount > allocatable {
 				return ErrEnvelopeAmountExceeded
 			}
 		} else {
@@ -140,13 +151,23 @@ func (s *EnvelopeService) CreateEnvelope(userID string, planID string, req Creat
 			if startDate.Before(parent.StartDate) || endDate.After(parent.EndDate) {
 				return ErrEnvelopeInvalidDateRange
 			}
-
 			currentChildTotal, err := s.repo.SumChildEnvelopeAmountTx(tx, parent.ID)
 			if err != nil {
 				return err
 			}
 
-			if currentChildTotal+req.Amount > parent.Amount {
+			// Withdrawals taken from the parent envelope itself have left
+			// the plan and cannot back child allocations either.
+			parentWithdrawalTotals, err := s.fundsRepo.EnvelopeTotals(tx, parent.ID, userID)
+			if err != nil {
+				return err
+			}
+			parentAllocatable := parent.Amount - parentWithdrawalTotals.Committed()
+			if parentAllocatable < 0 {
+				parentAllocatable = 0
+			}
+
+			if currentChildTotal+req.Amount > parentAllocatable {
 				return ErrEnvelopeAmountExceeded
 			}
 		}
@@ -415,10 +436,20 @@ func (s *EnvelopeService) UpdateEnvelope(userID string, planID string, envelopeI
 		if newAmount < childTotal {
 			return ErrEnvelopeAmountExceeded
 		}
-
 		if envelope.ParentEnvelopeID == nil {
 			if newStartDate.Before(plan.StartDate) || newEndDate.After(plan.EndDate) {
 				return ErrEnvelopeInvalidDateRange
+			}
+
+			// Money already withdrawn (paid or in-flight) has permanently
+			// left the plan, so it no longer backs envelope allocations.
+			withdrawalTotals, err := s.fundsRepo.PlanTotals(tx, planID, userID)
+			if err != nil {
+				return err
+			}
+			allocatable := plan.Amount - withdrawalTotals.Committed()
+			if allocatable < 0 {
+				allocatable = 0
 			}
 
 			topLevelTotalExcludingCurrent, err := s.repo.SumTopLevelEnvelopeAmountExcludingTx(tx, planID, envelope.ID)
@@ -426,7 +457,7 @@ func (s *EnvelopeService) UpdateEnvelope(userID string, planID string, envelopeI
 				return err
 			}
 
-			if topLevelTotalExcludingCurrent+newAmount > plan.Amount {
+			if topLevelTotalExcludingCurrent+newAmount > allocatable {
 				return ErrEnvelopeAmountExceeded
 			}
 		} else {
@@ -442,13 +473,23 @@ func (s *EnvelopeService) UpdateEnvelope(userID string, planID string, envelopeI
 			if newStartDate.Before(parent.StartDate) || newEndDate.After(parent.EndDate) {
 				return ErrEnvelopeInvalidDateRange
 			}
-
 			siblingTotalExcludingCurrent, err := s.repo.SumChildEnvelopeAmountExcludingTx(tx, parent.ID, envelope.ID)
 			if err != nil {
 				return err
 			}
 
-			if siblingTotalExcludingCurrent+newAmount > parent.Amount {
+			// Withdrawals taken from the parent envelope itself have left
+			// the plan and cannot back child allocations either.
+			parentWithdrawalTotals, err := s.fundsRepo.EnvelopeTotals(tx, parent.ID, userID)
+			if err != nil {
+				return err
+			}
+			parentAllocatable := parent.Amount - parentWithdrawalTotals.Committed()
+			if parentAllocatable < 0 {
+				parentAllocatable = 0
+			}
+
+			if siblingTotalExcludingCurrent+newAmount > parentAllocatable {
 				return ErrEnvelopeAmountExceeded
 			}
 		}

@@ -199,8 +199,11 @@ func getWithdrawalStatusCode(err interface{}) int {
 	case ErrWithdrawalPinNotSet:
 		return fiber.StatusForbidden
 
+	// 422 (not 401): 401 makes clients treat the request as an authentication
+	// failure and retry after token refresh, which re-submits the same wrong
+	// PIN and burns an extra attempt.
 	case ErrInvalidWithdrawalPin:
-		return fiber.StatusUnauthorized
+		return fiber.StatusUnprocessableEntity
 
 	case ErrWithdrawalPinLocked:
 		return fiber.StatusLocked

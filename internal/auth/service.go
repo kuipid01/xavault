@@ -863,16 +863,15 @@ func (s *AuthService) VerifyWithdrawalPin(req VerifyWithdrawalPinRequest) *respo
 	if validationErrors := validateWithdrawalPin(req.Pin); len(validationErrors) > 0 {
 		return &response.APIResponse{Success: false, Message: "Invalid withdrawal PIN", Error: validationErrors}
 	}
-
 	err := s.repository.VerifyWithdrawalPin(req.UserID, req.Pin)
 	if err != nil {
 		switch {
 		case errors.Is(err, users.ErrWithdrawalPinNotSet):
 			return &response.APIResponse{Success: false, Message: "Payment PIN is not set", Error: "pin_not_set"}
 		case errors.Is(err, users.ErrWithdrawalPinInvalid):
-			return &response.APIResponse{Success: false, Message: "Incorrect payment PIN. One attempt remaining before withdrawals are locked.", Error: "invalid_pin"}
+			return &response.APIResponse{Success: false, Message: "Incorrect payment PIN.", Error: "invalid_pin"}
 		case errors.Is(err, users.ErrWithdrawalPinLocked):
-			return &response.APIResponse{Success: false, Message: "Withdrawals are locked after two incorrect PIN attempts. Reset your PIN to continue.", Error: "withdrawal_pin_locked"}
+			return &response.APIResponse{Success: false, Message: "Withdrawals are locked after three incorrect PIN attempts. Reset your PIN to continue.", Error: "withdrawal_pin_locked"}
 		default:
 			return &response.APIResponse{Success: false, Message: "Could not verify payment PIN", Error: err.Error()}
 		}

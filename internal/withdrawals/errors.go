@@ -22,5 +22,5 @@ var (
 	ErrInvalidWithdrawalDestination    = errors.New("invalid withdrawal destination")
 	ErrWithdrawalPinNotSet             = errors.New("withdrawal pin is not set")
 	ErrInvalidWithdrawalPin            = errors.New("invalid withdrawal pin")
-	ErrWithdrawalPinLocked             = errors.New("withdrawals are locked after two incorrect pin attempts")
+	ErrWithdrawalPinLocked             = errors.New("withdrawals are locked after three incorrect pin attempts")
 )

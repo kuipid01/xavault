@@ -1548,7 +1548,7 @@ func withdrawalErrorResponse(message string, err error) *response.APIResponse {
 	if err == ErrInvalidWithdrawalPin {
 		return &response.APIResponse{
 			Success: false,
-			Message: "Incorrect withdrawal PIN. One attempt remaining before withdrawals are locked.",
+			Message: "Incorrect withdrawal PIN. Please try again.",
 			Error:   err,
 		}
 	}
@@ -1556,7 +1556,7 @@ func withdrawalErrorResponse(message string, err error) *response.APIResponse {
 	if err == ErrWithdrawalPinLocked {
 		return &response.APIResponse{
 			Success: false,
-			Message: "Withdrawals are locked after two incorrect PIN attempts. Reset your PIN to continue.",
+			Message: "Withdrawals are locked after three incorrect PIN attempts. Reset your PIN to continue.",
 			Error:   err,
 		}
 	}

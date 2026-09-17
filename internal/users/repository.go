@@ -13,7 +13,7 @@ import (
 var (
 	ErrWithdrawalPinNotSet  = errors.New("withdrawal pin is not set")
 	ErrWithdrawalPinInvalid = errors.New("invalid withdrawal pin")
-	ErrWithdrawalPinLocked  = errors.New("withdrawals are locked after two incorrect pin attempts")
+	ErrWithdrawalPinLocked  = errors.New("withdrawals are locked after three incorrect pin attempts")
 )
 
 type UserRepository struct {
@@ -138,8 +138,12 @@ func (r *UserRepository) UpdateWithdrawalPin(userID string, pinHash string) erro
 	}).Error
 }
 
+// maxWithdrawalPinAttempts is the number of wrong entries allowed before
+// withdrawals lock. The lock is cleared by resetting the PIN.
+const maxWithdrawalPinAttempts = 3
+
 // VerifyWithdrawalPin serializes attempts so concurrent requests cannot bypass
-// the two-attempt withdrawal lock.
+// the three-attempt withdrawal lock.
 func (r *UserRepository) VerifyWithdrawalPin(userID, pin string) error {
 	var verificationErr error
 	err := r.db.Transaction(func(tx *gorm.DB) error {
@@ -150,20 +154,20 @@ func (r *UserRepository) VerifyWithdrawalPin(userID, pin string) error {
 		if user.WithdrawalPinHash == nil || strings.TrimSpace(*user.WithdrawalPinHash) == "" {
 			return ErrWithdrawalPinNotSet
 		}
-		if user.WithdrawalPinLockedAt != nil || user.WithdrawalPinFailedAttempts >= 2 {
+		if user.WithdrawalPinLockedAt != nil || user.WithdrawalPinFailedAttempts >= maxWithdrawalPinAttempts {
 			verificationErr = ErrWithdrawalPinLocked
 			return nil
 		}
 		if bcrypt.CompareHashAndPassword([]byte(*user.WithdrawalPinHash), []byte(pin)) != nil {
 			attempts := user.WithdrawalPinFailedAttempts + 1
 			updates := map[string]interface{}{"withdrawal_pin_failed_attempts": attempts}
-			if attempts >= 2 {
+			if attempts >= maxWithdrawalPinAttempts {
 				updates["withdrawal_pin_locked_at"] = time.Now()
 			}
 			if err := tx.Model(&User{}).Where("id = ?", userID).Updates(updates).Error; err != nil {
 				return err
 			}
-			if attempts >= 2 {
+			if attempts >= maxWithdrawalPinAttempts {
 				verificationErr = ErrWithdrawalPinLocked
 				return nil
 			}

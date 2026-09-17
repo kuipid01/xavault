@@ -155,7 +155,7 @@ func (s *PlanService) CreateDraftPlan(userID string, req CreatePlanRequest) *res
 	return &response.APIResponse{
 		Success: true,
 		Message: "Draft spending plan created successfully",
-		Data:    mapPlanToResponse(plan, 0, funds.WithdrawalTotals{}),
+		Data:    mapPlanToResponse(plan, 0, funds.WithdrawalTotals{}, funds.WithdrawalTotals{}),
 	}
 }
 
@@ -205,7 +205,11 @@ func (s *PlanService) GetMyPlans(userID string, query ListPlansQuery) *response.
 		if err != nil {
 			return &response.APIResponse{Success: false, Message: "Could not calculate spending plan balance", Error: err}
 		}
-		items = append(items, mapPlanToResponse(&plan, topLevelAmount, totals))
+		allTotals, err := s.fundsRepo.PlanTotals(nil, plan.ID, userID)
+		if err != nil {
+			return &response.APIResponse{Success: false, Message: "Could not calculate spending plan balance", Error: err}
+		}
+		items = append(items, mapPlanToResponse(&plan, topLevelAmount, totals, allTotals))
 	}
 
 	return &response.APIResponse{
@@ -263,11 +267,15 @@ func (s *PlanService) GetPlanByID(userID string, planID string) *response.APIRes
 	if err != nil {
 		return &response.APIResponse{Success: false, Message: "Could not calculate spending plan balance", Error: err}
 	}
+	allTotals, err := s.fundsRepo.PlanTotals(nil, plan.ID, userID)
+	if err != nil {
+		return &response.APIResponse{Success: false, Message: "Could not calculate spending plan balance", Error: err}
+	}
 
 	return &response.APIResponse{
 		Success: true,
 		Message: "Spending plan fetched successfully",
-		Data:    mapPlanToResponse(plan, topLevelAmount, totals),
+		Data:    mapPlanToResponse(plan, topLevelAmount, totals, allTotals),
 	}
 }
 
@@ -398,7 +406,7 @@ func (s *PlanService) UpdateDraftPlan(userID string, planID string, req UpdatePl
 	return &response.APIResponse{
 		Success: true,
 		Message: "Draft spending plan updated successfully",
-		Data:    mapPlanToResponse(plan, 0, funds.WithdrawalTotals{}),
+		Data:    mapPlanToResponse(plan, 0, funds.WithdrawalTotals{}, funds.WithdrawalTotals{}),
 	}
 }
 
@@ -626,7 +634,7 @@ func (s *PlanService) ConfirmPlan(userID string, planID string, req ConfirmPlanR
 	return &response.APIResponse{
 		Success: true,
 		Message: "Spending plan confirmed successfully",
-		Data:    mapPlanToResponse(confirmedPlan, 0, funds.WithdrawalTotals{}),
+		Data:    mapPlanToResponse(confirmedPlan, 0, funds.WithdrawalTotals{}, funds.WithdrawalTotals{}),
 	}
 }
 
@@ -962,7 +970,7 @@ func (s *PlanService) CancelPlan(userID string, planID string, req CancelPlanReq
 		Success: true,
 		Message: "Spending plan cancelled successfully",
 		Data: CancelPlanResponse{
-			Plan:            mapPlanToResponse(cancelledPlan, 0, funds.WithdrawalTotals{}),
+			Plan:            mapPlanToResponse(cancelledPlan, 0, funds.WithdrawalTotals{}, funds.WithdrawalTotals{}),
 			Wallet:          walletSnapshot,
 			Message:         "Plan cancelled successfully",
 			CancellationFee: cancellationFee,
