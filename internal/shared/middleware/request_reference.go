@@ -3,6 +3,7 @@ package middleware
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -24,13 +25,28 @@ func RequestReference() fiber.Handler {
 		c.Locals(SupportReferenceLocal, reference)
 		c.Set(SupportReferenceHeader, reference)
 		err := c.Next()
+
+		// Middleware runs before Fiber's error handler, so when a handler (or the
+		// router itself, e.g. no route matched) returns an error, the response has
+		// not been written yet and its status is still the 200 default. Derive the
+		// status the error handler will use so logs reflect the real outcome.
+		status := c.Response().StatusCode()
+		if err != nil {
+			var fiberErr *fiber.Error
+			if errors.As(err, &fiberErr) {
+				status = fiberErr.Code
+			} else if status < fiber.StatusBadRequest {
+				status = fiber.StatusInternalServerError
+			}
+		}
+
 		level := "info"
-		if err != nil || c.Response().StatusCode() >= fiber.StatusBadRequest {
+		if err != nil || status >= fiber.StatusBadRequest {
 			level = "error"
 		}
 		log.Printf(
 			`{"level":%q,"event":"http_request","support_reference":%q,"status":%d,"method":%q,"path":%q,"latency_ms":%d}`,
-			level, reference, c.Response().StatusCode(), c.Method(), c.Path(), time.Since(startedAt).Milliseconds(),
+			level, reference, status, c.Method(), c.Path(), time.Since(startedAt).Milliseconds(),
 		)
 		return err
 	}
